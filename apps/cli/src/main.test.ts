@@ -28,4 +28,21 @@ describe("benchi", () => {
     expect(await runCli(["suite", "validate", file], (line) => output.push(line))).toBe(1);
     expect(JSON.parse(output[0]!)).toEqual({ ok: false, diagnostics: [{ path: "/kind", code: "INVALID_KIND" }] });
   });
+
+  it.each([
+    [["run", "freeze", "suite-revision-7"], "/api/v1/eval-runs", { suiteRevisionId: "suite-revision-7" }],
+    [["run", "inspect", "run-1"], "/api/v1/eval-runs/run-1", undefined],
+    [["run", "start", "run-1"], "/api/v1/eval-runs/run-1:start", {}]
+  ])("exposes separate freeze, inspect, and start API commands", async (args, path, body) => {
+    const requests: Array<{ url: string; method: string | undefined; body: unknown }> = [];
+    const request = async (url: string | URL | Request, init?: RequestInit) => {
+      requests.push({ url: String(url), method: init?.method, body: init?.body && JSON.parse(String(init.body)) });
+      return new Response(JSON.stringify({ data: { id: "run-1" } }), { status: 200 });
+    };
+    const output: string[] = [];
+
+    expect(await runCli(args, (line) => output.push(line), request)).toBe(0);
+    expect(requests).toEqual([{ url: `http://localhost:3000${path}`, method: body === undefined ? "GET" : "POST", body }]);
+    expect(JSON.parse(output[0]!)).toEqual({ data: { id: "run-1" } });
+  });
 });

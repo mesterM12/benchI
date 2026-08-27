@@ -55,7 +55,7 @@ export default function DefinePage() {
   }
 
   return <main>
-    <nav><strong>benchI</strong><span>Define</span><a href="/login">Account</a></nav>
+    <nav><strong>benchI</strong><span>Define</span><a href="/workflow">Observe & compare</a><a href="/login">Account</a></nav>
     <section className="intro"><h1>Shape an evaluation before it runs.</h1><p>Author canonical YAML, inspect exact validation decisions, then preserve each revision.</p></section>
     <section className="workspace">
       <div className="editor-head"><div><h2>Eval Suite</h2><p>{revision ? `Current revision ${revision}` : "Unsaved draft"}</p></div><div className="actions"><label className="suite-picker">Inspect suite<select value={suiteId ?? ""} onChange={(event) => void inspect(event.target.value)}><option value="">Choose saved suite</option>{suites.map((suite) => <option key={suite.id} value={suite.id}>{suite.id} · r{suite.revision}</option>)}</select></label><button className="secondary" disabled={pending} onClick={() => submit("validate")}>Validate</button><button disabled={pending} onClick={() => submit("save")}>{pending ? "Working…" : "Save revision"}</button></div></div>

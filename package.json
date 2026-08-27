@@ -10,6 +10,7 @@
     "build": "turbo run build",
     "dev": "turbo run dev",
     "lint": "turbo run lint",
+    "prototype:dashboard": "open prototypes/dashboard-information-architecture.html",
     "test": "turbo run test",
     "check": "turbo run check"
   },

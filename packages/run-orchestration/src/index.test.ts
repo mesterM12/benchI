@@ -292,7 +292,7 @@ describe("retained-content provider conformance", () => {
   });
 });
 
-describe.runIf(databaseUrl && process.env.TEST_OBJECT_STORAGE_ENDPOINT)("Git-backed Eval Run system seam", () => {
+describe.runIf(databaseUrl && process.env.TEST_OBJECT_STORAGE_ENDPOINT && process.env.TEST_OBJECT_STORAGE_ACCESS_KEY && process.env.TEST_OBJECT_STORAGE_SECRET_KEY)("Git-backed Eval Run system seam", () => {
   const pool = new Pool({ connectionString: databaseUrl });
   const content = createS3RetainedContent({
     endpoint: process.env.TEST_OBJECT_STORAGE_ENDPOINT!,

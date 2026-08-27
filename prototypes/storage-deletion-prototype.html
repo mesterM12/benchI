@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PROTOTYPE - Storage deletion</title>
+  <style>
+    :root { color-scheme: light; font: 15px/1.45 Inter, ui-sans-serif, system-ui, sans-serif; color: #17211b; background: #edf0e9; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    button { font: inherit; cursor: pointer; }
+    .shell { min-height: 100vh; display: grid; grid-template-columns: 220px 1fr; }
+    nav { padding: 28px 20px; background: #17211b; color: #eef3eb; }
+    nav strong { display: block; margin-bottom: 32px; font: 700 21px Georgia, serif; }
+    nav span { display: block; padding: 9px 11px; color: #aebbb2; }
+    nav .active { color: white; background: #2a382e; border-radius: 7px; }
+    main { max-width: 1180px; width: 100%; padding: 34px clamp(20px, 5vw, 68px) 110px; margin: auto; }
+    h1 { margin: 0; font: 700 clamp(28px, 4vw, 45px)/1.05 Georgia, serif; letter-spacing: -.02em; }
+    h2, h3, p { margin-top: 0; }
+    .eyebrow { margin-bottom: 8px; color: #5b6e61; text-transform: uppercase; letter-spacing: .13em; font-size: 12px; font-weight: 800; }
+    .muted { color: #627067; }
+    .grid { display: grid; gap: 16px; }
+    .card { padding: 20px; background: #fff; border: 1px solid #d7ddd5; border-radius: 10px; box-shadow: 0 8px 28px #29342c0a; }
+    .metrics { grid-template-columns: repeat(3, 1fr); margin: 28px 0 16px; }
+    .metric b { display: block; font: 700 31px Georgia, serif; }
+    .bar { height: 9px; margin-top: 14px; overflow: hidden; border-radius: 10px; background: #e3e7e1; }
+    .bar i { display: block; width: 68%; height: 100%; background: #db6b3c; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { padding: 14px; border-bottom: 1px solid #e1e5df; text-align: left; }
+    th { color: #627067; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+    tr[data-selected="true"] { background: #fff4e9; }
+    .pill { display: inline-block; padding: 3px 8px; border-radius: 20px; background: #e8eee9; font-size: 12px; font-weight: 700; }
+    .warn { color: #9a3619; }
+    .primary, .danger, .secondary { border: 0; border-radius: 7px; padding: 10px 14px; font-weight: 750; }
+    .primary { color: white; background: #186a47; }
+    .danger { color: white; background: #b43d1c; }
+    .secondary { color: #26362c; background: #e4e9e3; }
+    .split { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 18px; margin-top: 28px; }
+    .sticky { position: sticky; top: 20px; align-self: start; }
+    .impact { padding: 11px 0; border-bottom: 1px solid #e1e5df; }
+    .tree { margin-top: 28px; padding-left: 18px; border-left: 2px solid #bac5bc; }
+    .node { position: relative; margin: 18px 0; padding: 16px; background: white; border: 1px solid #d4dbd4; border-radius: 8px; }
+    .node:before { content: ""; position: absolute; left: -20px; top: 25px; width: 18px; border-top: 2px solid #bac5bc; }
+    .node[data-risk="high"] { border-left: 5px solid #c74c25; }
+    .capabilities { grid-template-columns: repeat(3, 1fr); margin-top: 28px; }
+    .capability { min-height: 190px; border-top: 5px solid #277653; }
+    .capability.lost { border-top-color: #b43d1c; }
+    .capability ul { padding-left: 18px; }
+    .confirm { margin-top: 18px; padding: 16px; border: 1px solid #e4aa95; background: #fff2ec; border-radius: 8px; }
+    .switcher { position: fixed; z-index: 10; left: 50%; bottom: 22px; transform: translateX(-50%); display: flex; align-items: center; gap: 14px; padding: 8px; color: white; background: #101713; border: 1px solid #39443d; border-radius: 40px; box-shadow: 0 12px 32px #0005; }
+    .switcher button { width: 38px; height: 38px; border: 0; border-radius: 50%; color: white; background: #2f3b33; }
+    .switcher output { min-width: 210px; text-align: center; font-weight: 750; }
+    dialog { max-width: 540px; border: 0; border-radius: 12px; padding: 26px; box-shadow: 0 30px 80px #0006; }
+    dialog::backdrop { background: #121713aa; }
+    dialog menu { display: flex; justify-content: flex-end; gap: 8px; padding: 15px 0 0; margin: 0; }
+    code { padding: 2px 5px; background: #e8ece7; border-radius: 4px; }
+    @media (max-width: 760px) { .shell { display: block; } nav { display: none; } main { padding-top: 24px; } .metrics, .capabilities, .split { grid-template-columns: 1fr; } .sticky { position: static; } table { font-size: 12px; } th, td { padding: 8px 5px; } .switcher output { min-width: 150px; } }
+  </style>
+</head>
+<body>
+  <!-- Three variants of Admin storage deletion, switchable via ?variant=A|B|C in this throwaway page. -->
+  <div class="shell">
+    <nav><strong>benchI</strong><span>Overview</span><span>Eval runs</span><span>Workers</span><span class="active">Storage</span><span>Administration</span></nav>
+    <main id="app"></main>
+  </div>
+  <div class="switcher" aria-label="Prototype variants"><button id="previous" aria-label="Previous variant">←</button><output id="variant"></output><button id="next" aria-label="Next variant">→</button></div>
+  <dialog id="dialog"><div id="dialog-content"></div><menu><button class="secondary" onclick="dialog.close()">Cancel</button><button class="danger" onclick="simulateDelete()">Confirm simulated deletion</button></menu></dialog>
+  <script>
+    const variants = ['A', 'B', 'C'];
+    const names = { A: 'Usage ledger', B: 'Dependency map', C: 'Capability forecast' };
+    let deleted = false;
+    const selected = { name: 'Run 2026-08-17 / TypeScript agents', logical: '41.8 GB', reclaimed: '8.3 GB', shared: '33.5 GB' };
+
+    function chrome(title, subtitle, content) {
+      return `<p class="eyebrow">Admin / Storage · Prototype</p><h1>${title}</h1><p class="muted">${subtitle}</p>${content}<p class="muted" style="margin-top:22px">Physical bytes are counted once per Content Identity. Logical usage attributes references without implying blob ownership.</p>`;
+    }
+    function metrics() {
+      return `<section class="grid metrics"><div class="card metric"><span>Physical stored</span><b>${deleted ? '1.36' : '1.37'} TB</b><div class="bar"><i></i></div></div><div class="card metric"><span>Logical references</span><b>${deleted ? '2.80' : '2.84'} TB</b><small class="muted">May exceed physical storage</small></div><div class="card metric"><span>Reclaimable now</span><b>${deleted ? '76.9' : '85.2'} GB</b><small class="muted">Unreferenced after policy checks</small></div></section>`;
+    }
+    function action() { return deleted ? `<span class="pill">Deletion simulated</span>` : `<button class="danger" onclick="preview()">Preview deletion</button>`; }
+    function variantA() {
+      return chrome('Storage ledger', 'Start with usage, select a logical record, then see exactly what deletion would reclaim.', `${metrics()}<div class="split"><section class="card"><table><thead><tr><th>Logical record</th><th>Referenced</th><th>Unique</th><th>Retention</th><th></th></tr></thead><tbody><tr data-selected="true"><td><b>${selected.name}</b><br><small>14 Trial Attempts</small></td><td>${selected.logical}</td><td>${selected.reclaimed}</td><td>Expired</td><td>${action()}</td></tr><tr><td><b>Run 2026-08-19 / Python baseline</b></td><td>28.1 GB</td><td>2.4 GB</td><td>52 days</td><td></td></tr><tr><td><b>Materialized source / monorepo</b></td><td>16.2 GB</td><td>0 B</td><td>Pinned</td><td></td></tr></tbody></table></section><aside class="card sticky"><h3>Selected record</h3><div class="impact"><b>${selected.logical}</b><br><span class="muted">logical references removed</span></div><div class="impact"><b>${selected.reclaimed}</b><br><span class="muted">physical bytes reclaimed</span></div><div class="impact"><b>${selected.shared}</b><br><span class="muted">remains for 6 other records</span></div><p class="warn" style="margin-top:16px"><b>Capability loss:</b> this Eval Run becomes non-rerunnable and non-rescorable.</p></aside></div>`);
+    }
+    function variantB() {
+      return chrome('Deletion dependency map', 'Start from the object you intend to delete and trace shared content, blockers, and consequences before acting.', `<div class="split"><section><div class="node" data-risk="high"><span class="pill">Deletion candidate</span><h3>${selected.name}</h3><p>41.8 GB referenced · retention expired</p>${action()}</div><div class="tree"><div class="node"><b>14 Trial Attempts</b><p class="muted">Outputs, logs, runtime records</p></div><div class="node"><b>6 shared Content Identities</b><p class="muted">33.5 GB remains because 6 other logical records reference it. No ownership transfer occurs.</p></div><div class="node" data-risk="high"><b>2 capability dependencies</b><p class="warn">Required execution input and scorer input would be removed.</p></div><div class="node"><b>1 Backup Set</b><p class="muted">Deletion is preserved by its Recovery Safety Record; backup bytes are not reclaimed now.</p></div></div></section><aside class="card sticky"><h3>Resolution</h3><p>No retention conflict blocks deletion.</p><p><span class="pill">Shared bytes retained</span></p><p><span class="pill">Backup protected</span></p><p class="warn"><b>Irreversible capability loss</b><br>Rerunnable and Rescorable become unavailable.</p><button class="secondary" onclick="alert('Prototype: would navigate to each dependent logical record.')">Inspect dependents</button></aside></div>`);
+    }
+    function variantC() {
+      return chrome('What will this run still support?', 'Start from user-visible capabilities; storage totals become supporting evidence rather than the decision frame.', `${metrics()}<section class="grid capabilities"><article class="card capability lost"><p class="eyebrow">After deletion</p><h2>Rerunnable</h2><p class="warn"><b>Lost</b></p><ul><li>Execution input removed</li><li>Runtime image retained</li><li>Secrets remain valid</li></ul></article><article class="card capability lost"><p class="eyebrow">After deletion</p><h2>Rescorable</h2><p class="warn"><b>Lost</b></p><ul><li>Trial output removed</li><li>Scoring policy retained</li></ul></article><article class="card capability"><p class="eyebrow">After deletion</p><h2>Inspectable</h2><p><b>Retained</b></p><ul><li>Metadata and score retained</li><li>Artifacts show tombstones</li></ul></article></section><section class="confirm"><div class="split" style="margin:0;grid-template-columns:1fr auto;align-items:center"><div><h3>Delete retained content for ${selected.name}?</h3><p style="margin:0">Removes ${selected.logical} of logical references and reclaims ${selected.reclaimed}. Shared content remains.</p></div>${action()}</div></section>`);
+    }
+    function current() { const value = new URLSearchParams(location.search).get('variant'); return variants.includes(value) ? value : 'A'; }
+    function render() { const key = current(); document.querySelector('#variant').textContent = `${key} · ${names[key]}`; document.querySelector('#app').innerHTML = ({ A: variantA, B: variantB, C: variantC })[key](); }
+    function cycle(step) { const index = variants.indexOf(current()); const key = variants[(index + step + variants.length) % variants.length]; const url = new URL(location); url.searchParams.set('variant', key); history.replaceState({}, '', url); render(); }
+    function preview() { document.querySelector('#dialog-content').innerHTML = `<p class="eyebrow">Destructive operation</p><h2>Confirm capability loss</h2><p>Deleting <b>${selected.name}</b> removes ${selected.logical} of logical references but reclaims only <b>${selected.reclaimed}</b>. Shared blobs have no owner and remain while referenced.</p><p class="warn"><b>Rerunnable</b> and <b>Rescorable</b> will be lost. <b>Inspectable</b> remains.</p><p>An Artifact Tombstone and audit record will remain. This prototype performs no real mutation.</p>`; document.querySelector('#dialog').showModal(); }
+    function simulateDelete() { deleted = true; document.querySelector('#dialog').close(); render(); }
+    document.querySelector('#previous').onclick = () => cycle(-1); document.querySelector('#next').onclick = () => cycle(1);
+    addEventListener('keydown', event => { if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName) || document.activeElement.isContentEditable) return; if (event.key === 'ArrowLeft') cycle(-1); if (event.key === 'ArrowRight') cycle(1); });
+    render();
+  </script>
+</body>
+</html>

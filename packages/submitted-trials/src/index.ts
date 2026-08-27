@@ -54,7 +54,7 @@ export class SubmittedTrials {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`${actorId}\0${idempotencyKey}`]);
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [actorId, idempotencyKey]);
       const existing = await client.query<{ payload_hash: string; result: SubmittedTrial }>("SELECT payload_hash, result FROM benchi_submitted_trial_receipts WHERE actor_id = $1 AND idempotency_key = $2", [actorId, idempotencyKey]);
       if (existing.rows[0]) {
         if (existing.rows[0].payload_hash !== payloadHash) throw new SubmissionError("IDEMPOTENCY_MISMATCH");

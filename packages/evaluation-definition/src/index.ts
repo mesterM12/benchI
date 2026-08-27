@@ -84,7 +84,7 @@ export class EvaluationDefinition {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`${command.actorId}\0${command.idempotencyKey}`]);
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, [command.actorId, command.idempotencyKey]);
       const existing = await client.query<{ payload_hash: string; result: MutationResult }>(`SELECT payload_hash, result FROM command_receipts WHERE actor_id = $1 AND idempotency_key = $2`, [command.actorId, command.idempotencyKey]);
       if (existing.rows[0]) {
         if (existing.rows[0].payload_hash !== payloadHash) throw new ApplicationError("IDEMPOTENCY_MISMATCH");

@@ -59,7 +59,6 @@ export type OpenCodeTrialResult = {
   commits: string[];
   branch: string;
   preservedWorktreePath: string | null;
-  cleanup: (() => Promise<void>) | null;
   runtime: {
     adapter: "sandcastle/opencode";
     model: string;
@@ -106,7 +105,6 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
       commits: [],
       branch,
       preservedWorktreePath: null,
-      cleanup: null,
       runtime: {
         adapter: "sandcastle/opencode",
         model: input.model,
@@ -146,6 +144,12 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
       preservedWorktreePath: close.preservedWorktreePath ?? null
     });
   } catch (error) {
+    let preservedWorktreePath: string | null;
+    try {
+      preservedWorktreePath = (await worktree.close()).preservedWorktreePath ?? null;
+    } catch {
+      preservedWorktreePath = worktree.worktreePath;
+    }
     return evidence(input, started, now(), events, worktree, {
       status: input.signal?.aborted ? "cancelled" : "failed",
       error: errorDetails(error),
@@ -154,7 +158,7 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
       commits: [],
       iterations: 0,
       logFilePath: null,
-      preservedWorktreePath: worktree.worktreePath
+      preservedWorktreePath
     });
   }
 }
@@ -184,7 +188,6 @@ function evidence(input: OpenCodeTrialInput, started: Date, finished: Date, even
     commits: value.commits,
     branch: worktree.branch,
     preservedWorktreePath: value.preservedWorktreePath,
-    cleanup: preserved ? async () => { await worktree.close(); } : null,
     runtime: {
       adapter: "sandcastle/opencode",
       model: input.model,

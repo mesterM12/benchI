@@ -49,7 +49,8 @@ describe("Sandcastle worktree lifecycle", () => {
       expect(await readFile(join(result.preservedWorktreePath!, "failure.txt"), "utf8")).toBe("inspectable");
 
       await unlink(join(result.preservedWorktreePath!, "failure.txt"));
-      await result.cleanup?.();
+      await exec("git", ["worktree", "remove", result.preservedWorktreePath!], { cwd: repositoryPath });
+      await exec("git", ["branch", "-D", result.branch], { cwd: repositoryPath });
       await expect(access(result.preservedWorktreePath!)).rejects.toThrow();
     } finally {
       await rm(repositoryPath, { recursive: true, force: true });

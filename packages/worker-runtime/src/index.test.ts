@@ -153,7 +153,6 @@ describe("OpenCode trial execution", () => {
       commits: ["abc123"],
       branch: "benchi/trial-attempt-7",
       preservedWorktreePath: null,
-      cleanup: null,
       runtime: {
         adapter: "sandcastle/opencode",
         model: "openai/gpt-5.6",
@@ -170,7 +169,9 @@ describe("OpenCode trial execution", () => {
 
   it.each(["failed", "cancelled"] as const)("returns %s evidence and preserves its worktree", async (status) => {
     const reason = new Error(status);
-    const close = vi.fn(async () => ({}));
+    const close = vi.fn()
+      .mockResolvedValueOnce({ preservedWorktreePath: "/repo/.sandcastle/worktrees/attempt-8" })
+      .mockResolvedValueOnce({});
     const run = vi.fn(async () => { throw reason; });
     vi.mocked(createWorktree).mockResolvedValue({
       branch: "benchi/attempt-8",
@@ -204,9 +205,6 @@ describe("OpenCode trial execution", () => {
       preservedWorktreePath: "/repo/.sandcastle/worktrees/attempt-8",
       runtime: { worktreeDisposition: "preserved" }
     });
-    expect(close).not.toHaveBeenCalled();
-    expect(result.cleanup).toBeTypeOf("function");
-    await result.cleanup?.();
     expect(close).toHaveBeenCalledOnce();
   });
 
@@ -224,7 +222,6 @@ describe("OpenCode trial execution", () => {
       error: { message: "git unavailable" },
       branch: "benchi/attempt-9",
       preservedWorktreePath: null,
-      cleanup: null,
       runtime: { worktreePath: null, worktreeDisposition: "not-created" }
     });
   });

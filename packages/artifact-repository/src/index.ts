@@ -100,11 +100,25 @@ export class ArtifactRepository {
 
   async setVisibility(id: string, visibility: ArtifactVisibility, principal: Principal): Promise<void> {
     requireAdmin(principal);
-    const result = await this.pool.query(
-      "UPDATE benchi_retained_artifacts SET visibility = $2, revision = revision + 1 WHERE id = $1",
-      [id, visibility]
-    );
-    if (result.rowCount !== 1) throw notFound();
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<Pick<ArtifactRow, "visibility">>(
+        "UPDATE benchi_retained_artifacts SET visibility = $2, revision = revision + 1 WHERE id = $1 RETURNING visibility",
+        [id, visibility]
+      );
+      if (result.rowCount !== 1) throw notFound();
+      await client.query(
+        "INSERT INTO benchi_artifact_audit_events (artifact_id, action, actor, detail) VALUES ($1, 'artifact-visibility-changed', $2, $3)",
+        [id, principal.actorId, { visibility }]
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async issueDownloadCapability(id: string, principal: Principal, lifetimeSeconds = 60): Promise<string> {
@@ -144,7 +158,8 @@ export class ArtifactRepository {
       let row: ArtifactRow;
       try {
         row = await this.authorizedArtifact(id, principal);
-      } catch {
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== "ARTIFACT_NOT_FOUND") throw error;
         omissions.push({ artifactId: id, reason: "Unauthorized", capabilityConsequences: ["Rerunnable", "Rescorable", "Inspectable"] });
         continue;
       }
@@ -197,13 +212,19 @@ export class ArtifactRepository {
     }
   }
 
-  async tombstone(id: string): Promise<{ artifactId: string; contentIdentity: string; deletedBy: string; deletedAt: string } | undefined> {
+  async tombstone(id: string, principal: Principal): Promise<{ artifactId: string; contentIdentity: string; deletedBy: string; deletedAt: string } | undefined> {
+    if (principal.role !== "Admin") throw new Error("ARTIFACT_ADMIN_REQUIRED");
     const result = await this.pool.query<{ artifact_id: string; content_identity: string; deleted_by: string; deleted_at: Date }>(
       "SELECT artifact_id, content_identity, deleted_by, deleted_at FROM benchi_artifact_tombstones WHERE artifact_id = $1",
       [id]
     );
     const row = result.rows[0];
     return row && { artifactId: row.artifact_id, contentIdentity: row.content_identity, deletedBy: row.deleted_by, deletedAt: row.deleted_at.toISOString() };
+  }
+
+  async auditEvents(principal: Principal): Promise<unknown[]> {
+    if (principal.role !== "Admin") throw new Error("ARTIFACT_ADMIN_REQUIRED");
+    return (await this.pool.query("SELECT artifact_id, action, actor, detail FROM benchi_artifact_audit_events ORDER BY id")).rows;
   }
 
   private async authorizedArtifact(id: string, principal: Principal): Promise<ArtifactRow> {

@@ -46,6 +46,7 @@ protocol("Artifact Repository application contract", () => {
     const stale = await repository.issueDownloadCapability("artifact-1", { role: "Member" }, 60);
     await repository.setVisibility("artifact-1", "Admin-restricted", { role: "Admin", actorId: "admin-1" });
     await expect(repository.download(stale)).rejects.toThrow("DOWNLOAD_CAPABILITY_INVALID");
+    expect(await repository.auditEvents({ role: "Admin" })).toContainEqual(expect.objectContaining({ artifact_id: "artifact-1", action: "artifact-visibility-changed" }));
   });
 
   it("exports profiles with explicit omissions and capability consequences", async () => {
@@ -78,7 +79,8 @@ protocol("Artifact Repository application contract", () => {
 
     await repository.deleteArtifact("artifact-1", { role: "Admin", actorId: "admin-1" }, "artifact-1");
     await expect(repository.inspect("artifact-1", { role: "Admin" })).rejects.toThrow("ARTIFACT_NOT_FOUND");
-    expect(await repository.tombstone("artifact-1")).toMatchObject({ artifactId: "artifact-1", deletedBy: "admin-1" });
+    await expect(repository.tombstone("artifact-1", { role: "Member" })).rejects.toThrow("ARTIFACT_ADMIN_REQUIRED");
+    expect(await repository.tombstone("artifact-1", { role: "Admin" })).toMatchObject({ artifactId: "artifact-1", deletedBy: "admin-1" });
     expect(await blobs.get(digest(bytes))).toEqual(bytes);
     await expect(retain("artifact-1", Buffer.from("replacement"))).rejects.toThrow("ARTIFACT_TOMBSTONED");
   });

@@ -1,0 +1,16 @@
+node_modules/
+.turbo/
+dist/
+coverage/
+
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+
+# Local reference project; it retains its own Git history.
+.eval-new/
+
+# Local issue tracker and agent working files.
+.scratch/

@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { EvaluationDefinition } from "./index.js";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
-const suite = (id: string, repetitions = 1) => `kind: EvalSuite\nschemaVersion: "1"\nid: ${id}\nagents: [{id: agent}]\ntasks: [{id: task}]\nmatrix: {repetitions: ${repetitions}}\n`;
+const suite = (id: string, repetitions = 1) => `kind: EvalSuite\nschemaVersion: "1"\nid: ${id}\nsources: [{id: source, git: {remote: x, ref: main}}]\nagents: [{id: agent, adapter: opencode, model: m}]\ntasks: [{id: task, source: source, prompt: p, acceptance: {command: c}}]\nexecution: {timeoutSeconds: 1}\nmatrix: {repetitions: ${repetitions}}\n`;
 
 describe.skipIf(!databaseUrl)("Evaluation Definition application seam", () => {
   const pool = new Pool({ connectionString: databaseUrl });

@@ -34,6 +34,7 @@ const fields = {
   source: new Set(["id", "git"]),
   git: new Set(["remote", "ref"]),
   agent: new Set(["id", "adapter", "model", "options"]),
+  options: new Set(["reasoningEffort", "temperature"]),
   task: new Set(["id", "source", "prompt", "acceptance"]),
   acceptance: new Set(["command"]),
   execution: new Set(["timeoutSeconds"]),
@@ -61,6 +62,9 @@ export function previewEvalSuite(source: string): PreviewResult {
   if (Array.isArray(value.tasks)) value.tasks.forEach((task, index) => {
     if (record(task)) unknownFields(task.acceptance, fields.acceptance, `/tasks/${index}/acceptance`, diagnostics);
   });
+  if (Array.isArray(value.agents)) value.agents.forEach((agent, index) => {
+    if (record(agent)) unknownFields(agent.options, fields.options, `/agents/${index}/options`, diagnostics);
+  });
   unknownFields(value.execution, fields.execution, "/execution", diagnostics);
   if (record(value.matrix)) {
     unknownFields(value.matrix, fields.matrix, "/matrix", diagnostics);
@@ -72,6 +76,10 @@ export function previewEvalSuite(source: string): PreviewResult {
   if (value.kind !== "EvalSuite") return invalid("/kind", "INVALID_KIND");
   if (value.schemaVersion !== "1") return invalid("/schemaVersion", "UNSUPPORTED_SCHEMA_VERSION");
   if (typeof value.id !== "string" || !value.id) return invalid("/id", "INVALID_ID");
+  if (value.sources === undefined) return invalid("/sources", "REQUIRED_SOURCES");
+  if (value.agents === undefined) return invalid("/agents", "REQUIRED_AGENTS");
+  if (value.tasks === undefined) return invalid("/tasks", "REQUIRED_TASKS");
+  if (value.execution === undefined) return invalid("/execution", "REQUIRED_EXECUTION");
   if (!items(value.agents)) return invalid("/agents", "INVALID_AGENTS");
   if (value.submissionSlots !== undefined && !items(value.submissionSlots)) return invalid("/submissionSlots", "INVALID_SUBMISSION_SLOTS");
   if (!items(value.tasks)) return invalid("/tasks", "INVALID_TASKS");
@@ -81,8 +89,8 @@ export function previewEvalSuite(source: string): PreviewResult {
   if (value.matrix.exclude !== undefined && !Array.isArray(value.matrix.exclude)) return invalid("/matrix/exclude", "INVALID_EXCLUSIONS");
 
   const suite = value as Suite;
-  if (suite.sources !== undefined) {
-    if (!items(suite.sources)) return invalid("/sources", "INVALID_SOURCES");
+  {
+    if (!items(suite.sources) || !suite.sources.length) return invalid("/sources", "INVALID_SOURCES");
     for (const [index, source] of suite.sources.entries()) {
       if (!record(source.git)) return invalid(`/sources/${index}/git`, "INVALID_GIT_SOURCE");
       if (typeof source.git.remote !== "string" || !source.git.remote) return invalid(`/sources/${index}/git/remote`, "INVALID_GIT_REMOTE");
@@ -92,6 +100,8 @@ export function previewEvalSuite(source: string): PreviewResult {
       if (agent.adapter !== "opencode") return invalid(`/agents/${index}/adapter`, "INVALID_ADAPTER");
       if (typeof agent.model !== "string" || !agent.model) return invalid(`/agents/${index}/model`, "INVALID_MODEL");
       if (agent.options !== undefined && !record(agent.options)) return invalid(`/agents/${index}/options`, "INVALID_OPTIONS");
+      if (record(agent.options) && agent.options.reasoningEffort !== undefined && !["low", "medium", "high"].includes(agent.options.reasoningEffort)) return invalid(`/agents/${index}/options/reasoningEffort`, "INVALID_REASONING_EFFORT");
+      if (record(agent.options) && agent.options.temperature !== undefined && (typeof agent.options.temperature !== "number" || agent.options.temperature < 0 || agent.options.temperature > 2)) return invalid(`/agents/${index}/options/temperature`, "INVALID_TEMPERATURE");
     }
     for (const [index, task] of suite.tasks.entries()) {
       if (typeof task.source !== "string" || !suite.sources.some(({ id }) => id === task.source)) return invalid(`/tasks/${index}/source`, "UNKNOWN_SOURCE");

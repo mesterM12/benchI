@@ -9,7 +9,7 @@ describe("benchi", () => {
   it("previews suite through shared application contract as JSON", async () => {
     const directory = await mkdtemp(join(tmpdir(), "benchi-"));
     const file = join(directory, "suite.yaml");
-    await writeFile(file, `kind: EvalSuite\nschemaVersion: "1"\nid: smoke\nagents: [{id: agent}]\ntasks: [{id: task}]\nmatrix: {repetitions: 1}\n`);
+    await writeFile(file, `kind: EvalSuite\nschemaVersion: "1"\nid: smoke\nsources: [{id: source, git: {remote: x, ref: main}}]\nagents: [{id: agent, adapter: opencode, model: m}]\ntasks: [{id: task, source: source, prompt: p, acceptance: {command: c}}]\nexecution: {timeoutSeconds: 1}\nmatrix: {repetitions: 1}\n`);
 
     const output: string[] = [];
     const exitCode = await runCli(["preview", file, "--json"], (line) => output.push(line));
@@ -31,9 +31,8 @@ describe("benchi", () => {
 
   it.each([
     [["run", "freeze", "checkout", "--revision", "7"], "/api/v1/eval-runs", { suiteId: "checkout", revision: 7 }],
-    [["run", "inspect", "run-1"], "/api/v1/eval-runs/run-1", undefined],
-    [["run", "start", "run-1"], "/api/v1/eval-runs/run-1:start", {}]
-  ])("exposes separate freeze, inspect, and start API commands", async (args, path, body) => {
+    [["run", "inspect", "run-1"], "/api/v1/eval-runs/run-1", undefined]
+  ])("exposes separate freeze and inspect API commands", async (args, path, body) => {
     const requests: Array<{ url: string; method: string | undefined; body: unknown }> = [];
     const request = async (url: string | URL | Request, init?: RequestInit) => {
       requests.push({ url: String(url), method: init?.method, body: init?.body && JSON.parse(String(init.body)) });
@@ -44,6 +43,21 @@ describe("benchi", () => {
     expect(await runCli(args, (line) => output.push(line), request)).toBe(0);
     expect(requests).toEqual([{ url: `http://localhost:3000${path}`, method: body === undefined ? "GET" : "POST", body }]);
     expect(JSON.parse(output[0]!)).toEqual({ data: { id: "run-1" } });
+  });
+
+  it("uses one server, session, and durable idempotency configuration", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "benchi-"));
+    const file = join(directory, "suite.yaml");
+    await writeFile(file, "suite");
+    const request = vi.fn().mockImplementation(async () => new Response("{}", { status: 201 }));
+
+    expect(await runCli(["suite", "create", file, "--server", "http://example.test", "--idempotency-key", "suite-key"], () => {}, request, { session: "session=x" })).toBe(0);
+    expect(await runCli(["run", "freeze", "suite", "--revision", "1", "--server", "http://example.test", "--idempotency-key", "freeze-key"], () => {}, request, { session: "session=x" })).toBe(0);
+
+    expect(request.mock.calls.map(([url, init]) => ({ url, cookie: init.headers.Cookie, key: init.headers["Idempotency-Key"] }))).toEqual([
+      { url: "http://example.test/api/v1/eval-suites", cookie: "session=x", key: "suite-key" },
+      { url: "http://example.test/api/v1/eval-runs", cookie: "session=x", key: "freeze-key" }
+    ]);
   });
 
   it("publishes Submitted Trials through API", async () => {

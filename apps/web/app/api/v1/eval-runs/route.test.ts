@@ -21,7 +21,7 @@ describe("/api/v1/eval-runs", () => {
     const { POST } = await import("./route");
 
     const response = await POST(new Request("http://localhost/api/v1/eval-runs", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ suiteId: "checkout", revision: 2 })
+      method: "POST", headers: { "content-type": "application/json", "idempotency-key": "freeze-1" }, body: JSON.stringify({ suiteId: "checkout", revision: 2 })
     }));
 
     expect(response.status).toBe(201);
@@ -29,6 +29,13 @@ describe("/api/v1/eval-runs", () => {
       suiteRevisionId: "checkout@2",
       gitSources: [{ id: "app", remote: "https://example.test/app.git", ref: "main" }],
       trials: [{ id: "opencode__cart__baseline__1", agentId: "opencode", taskId: "cart", scenarioVariantId: "baseline", repetitionIndex: 1 }]
-    }));
+    }), { actorId: "member-1", idempotencyKey: "freeze-1" });
+  });
+
+  it("requires caller idempotency", async () => {
+    const { POST } = await import("./route");
+    const response = await POST(new Request("http://localhost/api/v1/eval-runs", { method: "POST", body: "{}" }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ code: "IDEMPOTENCY_KEY_REQUIRED" });
   });
 });

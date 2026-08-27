@@ -5,29 +5,35 @@ import { randomUUID } from "node:crypto";
 import { previewEvalSuite } from "@benchi/contracts";
 
 type Request = (url: string | URL | globalThis.Request, init?: RequestInit) => Promise<Response>;
+type CliConfig = { server?: string; session?: string };
 
-export async function runCli(args: string[], write = console.log, request: Request = fetch): Promise<number> {
+export async function runCli(args: string[], write = console.log, request: Request = fetch, config: CliConfig = {}): Promise<number> {
+  const server = option(args, "--server") ?? config.server ?? process.env.BENCHI_URL ?? process.env.BENCHI_SERVER ?? "http://localhost:3000";
+  const session = config.session ?? process.env.BENCHI_SESSION;
   if (args[0] === "trial" && args[1] === "submit" && args[2]) {
-    const response = await request(`${process.env.BENCHI_URL ?? "http://localhost:3000"}/api/v1/submitted-trials`, {
+    const headers: Record<string, string> = { "Content-Type": "application/json", "Idempotency-Key": randomUUID() };
+    if (session) headers.Cookie = session;
+    const response = await request(`${server}/api/v1/submitted-trials`, {
       method: "POST",
-      headers: { "content-type": "application/json", "idempotency-key": randomUUID() },
+      headers,
       body: await readFile(args[2], "utf8")
     });
     write(await response.text());
     return response.ok ? 0 : 1;
   }
-  if (args[0] === "run" && (args[1] === "freeze" || args[1] === "inspect" || args[1] === "start") && args[2]) {
+  if (args[0] === "run" && (args[1] === "freeze" || args[1] === "inspect") && args[2]) {
     const [, command, id] = args;
     const revision = option(args, "--revision");
     if (command === "freeze" && (!revision || !Number.isInteger(Number(revision)) || Number(revision) < 1)) {
       write("usage: benchi run freeze <suite-id> --revision <n>");
       return 2;
     }
-    const path = command === "freeze" ? "/api/v1/eval-runs" : `/api/v1/eval-runs/${encodeURIComponent(id)}${command === "start" ? ":start" : ""}`;
-    const body = command === "freeze" ? { suiteId: id, revision: Number(revision) } : command === "start" ? {} : undefined;
-    const headers: Record<string, string> = { "content-type": "application/json" };
-    if (process.env.BENCHI_SESSION) headers.Cookie = process.env.BENCHI_SESSION;
-    const response = await request(`${process.env.BENCHI_URL ?? "http://localhost:3000"}${path}`, {
+    const path = command === "freeze" ? "/api/v1/eval-runs" : `/api/v1/eval-runs/${encodeURIComponent(id)}`;
+    const body = command === "freeze" ? { suiteId: id, revision: Number(revision) } : undefined;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (session) headers.Cookie = session;
+    if (body !== undefined) headers["Idempotency-Key"] = option(args, "--idempotency-key") ?? randomUUID();
+    const response = await request(`${server}${path}`, {
       method: body === undefined ? "GET" : "POST",
       headers,
       ...(body === undefined ? {} : { body: JSON.stringify(body) })
@@ -36,7 +42,7 @@ export async function runCli(args: string[], write = console.log, request: Reque
     return response.ok ? 0 : 1;
   }
   const [command, file] = args;
-  if (command === "suite") return runSuite(args.slice(1), write);
+  if (command === "suite") return runSuite(args.slice(1), write, request, { server, session });
   if (command !== "preview" || !file) {
     write("usage: benchi preview <suite.yaml> [--json] | benchi suite <validate|create|revise|list|get> | benchi run freeze <suite-id> --revision <n> | inspect <run-id> | benchi trial submit <bundle.json>");
     return 2;
@@ -52,11 +58,11 @@ export async function runCli(args: string[], write = console.log, request: Reque
   return result.ok ? 0 : 1;
 }
 
-async function runSuite(args: string[], write: (line: string) => void): Promise<number> {
+async function runSuite(args: string[], write: (line: string) => void, request: Request, config: Required<Pick<CliConfig, "server">> & CliConfig): Promise<number> {
   const [command, value, maybeFile] = args;
-  const server = option(args, "--server") ?? process.env.BENCHI_SERVER ?? "http://localhost:3000";
+  const server = config.server;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (process.env.BENCHI_SESSION) headers.Cookie = process.env.BENCHI_SESSION;
+  if (config.session) headers.Cookie = config.session;
   let path = "/api/v1/eval-suites";
   let method = "GET";
   let body: string | undefined;
@@ -77,7 +83,7 @@ async function runSuite(args: string[], write: (line: string) => void): Promise<
     if (!value) return usage(write);
     path += `/${encodeURIComponent(value)}`;
   } else if (command !== "list") return usage(write);
-  const response = await fetch(`${server}${path}`, { method, headers, body });
+  const response = await request(`${server}${path}`, { method, headers, body });
   const result = await response.json();
   write(JSON.stringify(result));
   return response.ok && (typeof result !== "object" || result === null || !("ok" in result) || result.ok) ? 0 : 1;

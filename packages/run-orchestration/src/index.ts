@@ -140,6 +140,13 @@ export async function migrate(pool: Pool): Promise<void> {
       position integer NOT NULL,
       trial jsonb NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS benchi_eval_run_receipts (
+      actor_id text NOT NULL,
+      idempotency_key text NOT NULL,
+      payload_hash text NOT NULL,
+      run_id text NOT NULL REFERENCES benchi_eval_run_snapshots(id),
+      PRIMARY KEY (actor_id, idempotency_key)
+    );
     CREATE TABLE IF NOT EXISTS benchi_phase_jobs (
       id text PRIMARY KEY,
       trial_id text NOT NULL UNIQUE REFERENCES benchi_eval_trials(id),
@@ -187,39 +194,43 @@ export async function migrate(pool: Pool): Promise<void> {
 export class RunOrchestration {
   constructor(private readonly pool: Pool, private readonly retainedContent: RetainedContent) {}
 
-  async freeze(command: FreezeEvalRun): Promise<EvalRunSnapshot> {
-    const localSources = await Promise.all(command.localSources.map(async (source) => {
-      const bytes = await readSuiteFile(command.suiteRoot, source.path);
-      const contentIdentity = identity(bytes);
-      await this.retainedContent.putVerified(contentIdentity, bytes);
-      return { id: source.id, kind: "suite-relative" as const, requestedPath: source.path, contentIdentity, size: bytes.length };
-    }));
-    const gitSources = await Promise.all((command.gitSources ?? []).map(async (source) => {
-      const { bytes, commit } = await materializeGitSource(source);
-      const contentIdentity = identity(bytes);
-      await this.retainedContent.putVerified(contentIdentity, bytes);
-      return { id: source.id, kind: "git" as const, remote: source.remote, requestedRef: source.ref, commit, contentIdentity, size: bytes.length };
-    }));
-    const snapshot: EvalRunSnapshot = {
-      id: command.id,
-      suiteRevisionId: command.suiteRevisionId,
-      suite: command.suite,
-      resolvedDefinitions: command.resolvedDefinitions,
-      trials: command.trials,
-      effectivePolicies: command.effectivePolicies,
-      sources: [...localSources, ...gitSources],
-      frozenAt: command.frozenAt,
-      benchiVersion: command.benchiVersion,
-      state: "Ready"
-    };
-
+  async freeze(command: FreezeEvalRun, idempotency?: { actorId: string; idempotencyKey: string }): Promise<EvalRunSnapshot> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      const payloadHash = createHash("sha256").update(command.suiteRevisionId).digest("hex");
+      if (idempotency) {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [idempotency.actorId, idempotency.idempotencyKey]);
+        const receipt = await client.query<{ payload_hash: string; run_id: string }>("SELECT payload_hash, run_id FROM benchi_eval_run_receipts WHERE actor_id = $1 AND idempotency_key = $2", [idempotency.actorId, idempotency.idempotencyKey]);
+        if (receipt.rows[0]) {
+          if (receipt.rows[0].payload_hash !== payloadHash) throw new Error("IDEMPOTENCY_MISMATCH");
+          await client.query("COMMIT");
+          return (await this.get(receipt.rows[0].run_id))!;
+        }
+      }
+      const localSources = await Promise.all(command.localSources.map(async (source) => {
+        const bytes = await readSuiteFile(command.suiteRoot, source.path);
+        const contentIdentity = identity(bytes);
+        await this.retainedContent.putVerified(contentIdentity, bytes);
+        return { id: source.id, kind: "suite-relative" as const, requestedPath: source.path, contentIdentity, size: bytes.length };
+      }));
+      const gitSources = await Promise.all((command.gitSources ?? []).map(async (source) => {
+        const { bytes, commit } = await materializeGitSource(source);
+        const contentIdentity = identity(bytes);
+        await this.retainedContent.putVerified(contentIdentity, bytes);
+        return { id: source.id, kind: "git" as const, remote: source.remote, requestedRef: source.ref, commit, contentIdentity, size: bytes.length };
+      }));
+      const snapshot: EvalRunSnapshot = {
+        id: command.id, suiteRevisionId: command.suiteRevisionId, suite: command.suite,
+        resolvedDefinitions: command.resolvedDefinitions, trials: command.trials,
+        effectivePolicies: command.effectivePolicies, sources: [...localSources, ...gitSources],
+        frozenAt: command.frozenAt, benchiVersion: command.benchiVersion, state: "Ready"
+      };
       await client.query("INSERT INTO benchi_eval_run_snapshots (id, state, snapshot) VALUES ($1, 'Ready', $2)", [command.id, snapshot]);
       for (const [position, trial] of command.trials.entries()) {
         await client.query("INSERT INTO benchi_eval_trials (id, run_id, position, trial) VALUES ($1, $2, $3, $4)", [trial.id, command.id, position, trial]);
       }
+      if (idempotency) await client.query("INSERT INTO benchi_eval_run_receipts (actor_id, idempotency_key, payload_hash, run_id) VALUES ($1, $2, $3, $4)", [idempotency.actorId, idempotency.idempotencyKey, payloadHash, command.id]);
       await client.query("COMMIT");
       return snapshot;
     } catch (error) {

@@ -8,7 +8,8 @@
     "migrate": "tsx scripts/migrate.ts",
     "bootstrap-admin": "tsx scripts/bootstrap-admin.ts",
     "lint": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run --passWithNoTests --exclude system/**",
+    "test:system": "vitest run system/eval-runs.system.test.ts",
     "check": "tsc --noEmit"
   },
   "dependencies": {

@@ -15,5 +15,9 @@
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"
+  },
+  "dependencies": {
+    "@ai-hero/sandcastle": "0.12.0",
+    "@standard-schema/spec": "1.0.0"
   }
 }

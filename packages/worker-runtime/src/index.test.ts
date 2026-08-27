@@ -1,10 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { run as runSandcastle, type RunOptions, type RunResult, type SandboxProvider } from "@ai-hero/sandcastle";
 import {
   WorkerRuntime,
+  runOpenCodeTrial,
   runNativeLinuxConformance,
   type CapabilityProfile,
   type ExecutionEnvironmentSpecification
 } from "./index.js";
+
+vi.mock("@ai-hero/sandcastle", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@ai-hero/sandcastle")>(),
+  run: vi.fn()
+}));
 
 const profile: CapabilityProfile = {
   platform: "native-linux",
@@ -79,5 +86,73 @@ describe("native Linux conformance", () => {
       attemptNetwork: async (target) => target === "metadata"
     });
     expect(result).toEqual({ conformant: false, failures: ["ISOLATION_PROFILE_INVALID", "NETWORK_ESCAPE:metadata"] });
+  });
+});
+
+describe("OpenCode trial execution", () => {
+  it("returns normalized Sandcastle evidence from an isolated branch", async () => {
+    let received: RunOptions | undefined;
+    const sandbox = {} as SandboxProvider;
+    const execute = async (options: RunOptions): Promise<RunResult> => {
+      received = options;
+      options.logging?.type === "file" && options.logging.onAgentStreamEvent?.({
+        type: "toolCall",
+        name: "edit",
+        formattedArgs: "src/add.ts",
+        iteration: 1,
+        timestamp: new Date("2026-08-27T12:00:01.000Z")
+      });
+      return {
+        iterations: [{}],
+        completionSignal: "<promise>COMPLETE</promise>",
+        stdout: "fixed\n<promise>COMPLETE</promise>",
+        commits: [{ sha: "abc123" }],
+        branch: "benchi/trial-attempt-7",
+        logFilePath: "/repo/.sandcastle/logs/trial-attempt-7.log"
+      };
+    };
+    vi.mocked(runSandcastle).mockImplementation(execute);
+
+    const result = await runOpenCodeTrial({
+      attemptId: "trial-attempt-7",
+      repositoryPath: "/repo",
+      prompt: "Fix the failing test and commit the change.",
+      model: "openai/gpt-5.6",
+      sandbox,
+      now: (() => {
+        const times = [new Date("2026-08-27T12:00:00.000Z"), new Date("2026-08-27T12:00:02.000Z")];
+        return () => times.shift()!;
+      })()
+    });
+
+    expect(received).toMatchObject({
+      cwd: "/repo",
+      prompt: "Fix the failing test and commit the change.",
+      maxIterations: 1,
+      branchStrategy: { type: "branch", branch: "benchi/trial-attempt-7" },
+      logging: { type: "file", verbose: false }
+    });
+    expect(received?.agent.name).toBe("opencode");
+    expect(received?.sandbox).toBe(sandbox);
+    expect(result).toEqual({
+      status: "completed",
+      completionSignal: "<promise>COMPLETE</promise>",
+      events: [{ type: "toolCall", name: "edit", formattedArgs: "src/add.ts", iteration: 1, occurredAt: "2026-08-27T12:00:01.000Z" }],
+      stdout: "fixed\n<promise>COMPLETE</promise>",
+      stderr: null,
+      commits: ["abc123"],
+      branch: "benchi/trial-attempt-7",
+      preservedWorktreePath: null,
+      runtime: {
+        adapter: "sandcastle/opencode",
+        model: "openai/gpt-5.6",
+        startedAt: "2026-08-27T12:00:00.000Z",
+        finishedAt: "2026-08-27T12:00:02.000Z",
+        durationMs: 2000,
+        iterations: 1,
+        logFilePath: "/repo/.sandcastle/logs/trial-attempt-7.log",
+        stderrCapture: "not-exposed-by-sandcastle"
+      }
+    });
   });
 });

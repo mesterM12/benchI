@@ -1,3 +1,12 @@
+import { join } from "node:path";
+import {
+  opencode,
+  run as runSandcastle,
+  type AgentStreamEvent,
+  type OpenCodeOptions,
+  type SandboxProvider
+} from "@ai-hero/sandcastle";
+
 export type Platform = "native-linux";
 export type Isolation = "linux-container" | "virtual-machine";
 export type NetworkMode = "offline" | "closed-local" | "controlled-online";
@@ -32,6 +41,94 @@ export type RuntimeCapabilities = RetainedCapabilities & {
   runtimeEligible: boolean;
   reasons: string[];
 };
+
+export type OpenCodeTrialEvent =
+  | { type: "text"; message: string; iteration: number; occurredAt: string }
+  | { type: "toolCall"; name: string; formattedArgs: string; iteration: number; occurredAt: string }
+  | { type: "raw"; line: string; iteration: number; occurredAt: string };
+export type OpenCodeTrialResult = {
+  status: "completed";
+  completionSignal: string | null;
+  events: OpenCodeTrialEvent[];
+  stdout: string;
+  stderr: null;
+  commits: string[];
+  branch: string;
+  preservedWorktreePath: string | null;
+  runtime: {
+    adapter: "sandcastle/opencode";
+    model: string;
+    startedAt: string;
+    finishedAt: string;
+    durationMs: number;
+    iterations: number;
+    logFilePath: string | null;
+    stderrCapture: "not-exposed-by-sandcastle";
+  };
+};
+export type OpenCodeTrialInput = {
+  attemptId: string;
+  repositoryPath: string;
+  prompt: string;
+  model: string;
+  sandbox: SandboxProvider;
+  variant?: string;
+  agent?: string;
+  env?: Record<string, string>;
+  signal?: AbortSignal;
+  now?: () => Date;
+};
+
+export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenCodeTrialResult> {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(input.attemptId)) throw new Error("INVALID_ATTEMPT_ID");
+  const now = input.now ?? (() => new Date());
+  const started = now();
+  const events: OpenCodeTrialEvent[] = [];
+  const options: OpenCodeOptions = { variant: input.variant, agent: input.agent, env: input.env };
+  const result = await runSandcastle({
+    agent: opencode(input.model, options),
+    sandbox: input.sandbox,
+    cwd: input.repositoryPath,
+    prompt: input.prompt,
+    maxIterations: 1,
+    branchStrategy: { type: "branch", branch: `benchi/${input.attemptId}` },
+    logging: {
+      type: "file",
+      path: join(input.repositoryPath, ".sandcastle", "logs", `${input.attemptId}.log`),
+      verbose: false,
+      onAgentStreamEvent: (event) => events.push(normalizeAgentEvent(event))
+    },
+    signal: input.signal
+  });
+  const finished = now();
+  return {
+    status: "completed",
+    completionSignal: result.completionSignal ?? null,
+    events,
+    stdout: result.stdout,
+    stderr: null,
+    commits: result.commits.map(({ sha }) => sha),
+    branch: result.branch,
+    preservedWorktreePath: result.preservedWorktreePath ?? null,
+    runtime: {
+      adapter: "sandcastle/opencode",
+      model: input.model,
+      startedAt: started.toISOString(),
+      finishedAt: finished.toISOString(),
+      durationMs: finished.getTime() - started.getTime(),
+      iterations: result.iterations.length,
+      logFilePath: result.logFilePath ?? null,
+      stderrCapture: "not-exposed-by-sandcastle"
+    }
+  };
+}
+
+function normalizeAgentEvent(event: AgentStreamEvent): OpenCodeTrialEvent {
+  const common = { iteration: event.iteration, occurredAt: event.timestamp.toISOString() };
+  if (event.type === "text") return { type: event.type, message: event.message, ...common };
+  if (event.type === "toolCall") return { type: event.type, name: event.name, formattedArgs: event.formattedArgs, ...common };
+  return { type: event.type, line: event.line, ...common };
+}
 
 export class WorkerRuntime {
   private readonly workers = new Map<string, WorkerRecord>();

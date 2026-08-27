@@ -40,7 +40,7 @@ export async function migrate(pool: Pool): Promise<void> {
     CREATE TABLE IF NOT EXISTS benchi_download_capabilities (
       token_hash text PRIMARY KEY, artifact_id text NOT NULL REFERENCES benchi_retained_artifacts(id) ON DELETE CASCADE,
       artifact_revision integer NOT NULL, action text NOT NULL CHECK (action = 'download'),
-      expires_at timestamptz NOT NULL
+      requester_id text NOT NULL, expires_at timestamptz NOT NULL
     );
     CREATE TABLE IF NOT EXISTS benchi_artifact_tombstones (
       artifact_id text PRIMARY KEY, content_identity text NOT NULL, deleted_by text NOT NULL,
@@ -122,24 +122,26 @@ export class ArtifactRepository {
   }
 
   async issueDownloadCapability(id: string, principal: Principal, lifetimeSeconds = 60): Promise<string> {
+    if (!principal.actorId) throw new Error("ARTIFACT_AUTHENTICATION_REQUIRED");
     if (!Number.isInteger(lifetimeSeconds) || lifetimeSeconds < 1 || lifetimeSeconds > 300) throw new Error("DOWNLOAD_CAPABILITY_LIFETIME_INVALID");
     const row = await this.authorizedArtifact(id, principal);
     const token = randomBytes(32).toString("base64url");
     const expiresAt = new Date(this.clock().getTime() + lifetimeSeconds * 1000);
     await this.pool.query(
-      "INSERT INTO benchi_download_capabilities (token_hash, artifact_id, artifact_revision, action, expires_at) VALUES ($1, $2, $3, 'download', $4)",
-      [sha256(Buffer.from(token)), id, row.revision, expiresAt]
+      "INSERT INTO benchi_download_capabilities (token_hash, artifact_id, artifact_revision, action, requester_id, expires_at) VALUES ($1, $2, $3, 'download', $4, $5)",
+      [sha256(Buffer.from(token)), id, row.revision, principal.actorId, expiresAt]
     );
     return token;
   }
 
-  async download(token: string): Promise<Buffer> {
+  async download(token: string, principal: Principal): Promise<Buffer> {
+    if (!principal.actorId) throw new Error("DOWNLOAD_CAPABILITY_INVALID");
     const result = await this.pool.query<ArtifactRow>(`
       SELECT a.* FROM benchi_download_capabilities c
       JOIN benchi_retained_artifacts a ON a.id = c.artifact_id
-      WHERE c.token_hash = $1 AND c.action = 'download' AND c.expires_at > $2
+      WHERE c.token_hash = $1 AND c.action = 'download' AND c.expires_at > $2 AND c.requester_id = $3
         AND c.artifact_revision = a.revision
-    `, [sha256(Buffer.from(token)), this.clock()]);
+    `, [sha256(Buffer.from(token)), this.clock(), principal.actorId]);
     const row = result.rows[0];
     if (!row) throw new Error("DOWNLOAD_CAPABILITY_INVALID");
     const bytes = await this.blobs.get(row.content_identity);
@@ -229,7 +231,7 @@ export class ArtifactRepository {
 
   private async authorizedArtifact(id: string, principal: Principal): Promise<ArtifactRow> {
     const row = await this.rawArtifact(id);
-    if (principal.role !== "Admin" && row.visibility !== "Organization-visible") throw notFound();
+    if (row.visibility === "Quarantined" || (principal.role !== "Admin" && row.visibility !== "Organization-visible")) throw notFound();
     return row;
   }
 

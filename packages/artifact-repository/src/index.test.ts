@@ -30,22 +30,24 @@ protocol("Artifact Repository application contract", () => {
     await retain("visible", bytes);
     await retain("restricted", bytes, "Admin-restricted");
 
-    expect(await repository.inspect("visible", { role: "Member" })).toMatchObject({ id: "visible" });
-    await expect(repository.inspect("restricted", { role: "Member" })).rejects.toThrow("ARTIFACT_NOT_FOUND");
-    await expect(repository.inspect("missing", { role: "Member" })).rejects.toThrow("ARTIFACT_NOT_FOUND");
+    expect(await repository.inspect("visible", { role: "Member", actorId: "member-1" })).toMatchObject({ id: "visible" });
+    await expect(repository.inspect("restricted", { role: "Member", actorId: "member-1" })).rejects.toThrow("ARTIFACT_NOT_FOUND");
+    await expect(repository.inspect("missing", { role: "Member", actorId: "member-1" })).rejects.toThrow("ARTIFACT_NOT_FOUND");
   });
 
   it("issues short-lived download-only capabilities invalidated by state changes", async () => {
     await retain("artifact-1", Buffer.from("evidence"));
-    const token = await repository.issueDownloadCapability("artifact-1", { role: "Member" }, 60);
-    await expect(repository.download(token)).resolves.toEqual(Buffer.from("evidence"));
+    const member = { role: "Member" as const, actorId: "member-1" };
+    const token = await repository.issueDownloadCapability("artifact-1", member, 60);
+    await expect(repository.download(token, { role: "Member", actorId: "member-2" })).rejects.toThrow("DOWNLOAD_CAPABILITY_INVALID");
+    await expect(repository.download(token, member)).resolves.toEqual(Buffer.from("evidence"));
 
     now = new Date("2026-08-27T10:01:01.000Z");
-    await expect(repository.download(token)).rejects.toThrow("DOWNLOAD_CAPABILITY_INVALID");
+    await expect(repository.download(token, member)).rejects.toThrow("DOWNLOAD_CAPABILITY_INVALID");
     now = new Date("2026-08-27T10:00:00.000Z");
-    const stale = await repository.issueDownloadCapability("artifact-1", { role: "Member" }, 60);
+    const stale = await repository.issueDownloadCapability("artifact-1", member, 60);
     await repository.setVisibility("artifact-1", "Admin-restricted", { role: "Admin", actorId: "admin-1" });
-    await expect(repository.download(stale)).rejects.toThrow("DOWNLOAD_CAPABILITY_INVALID");
+    await expect(repository.download(stale, member)).rejects.toThrow("DOWNLOAD_CAPABILITY_INVALID");
     expect(await repository.auditEvents({ role: "Admin" })).toContainEqual(expect.objectContaining({ artifact_id: "artifact-1", action: "artifact-visibility-changed" }));
   });
 
@@ -53,7 +55,7 @@ protocol("Artifact Repository application contract", () => {
     await retain("artifact-1", Buffer.from("results"));
     await retain("artifact-2", Buffer.from("source"), "Admin-restricted");
 
-    const bundle = await repository.export(["artifact-1", "artifact-2"], "results", { role: "Member" });
+    const bundle = await repository.export(["artifact-1", "artifact-2"], "results", { role: "Member", actorId: "member-1" });
     expect(bundle.manifest).toMatchObject({
       profile: "results",
       artifacts: [{ id: "artifact-1", contentIdentity: digest(Buffer.from("results")) }],
@@ -62,10 +64,10 @@ protocol("Artifact Repository application contract", () => {
       ]
     });
     expect(bundle.payloads.size).toBe(1);
-    expect((await repository.export(["artifact-1"], "metadata", { role: "Member" })).manifest.omissions).toEqual([
+    expect((await repository.export(["artifact-1"], "metadata", { role: "Member", actorId: "member-1" })).manifest.omissions).toEqual([
       { artifactId: "artifact-1", reason: "ProfileExcluded", capabilityConsequences: ["Rerunnable", "Rescorable", "Inspectable"] }
     ]);
-    await expect(repository.export(["artifact-1", "artifact-2"], "full", { role: "Member" })).rejects.toThrow("EXPORT_INCOMPLETE");
+    await expect(repository.export(["artifact-1", "artifact-2"], "full", { role: "Member", actorId: "member-1" })).rejects.toThrow("EXPORT_INCOMPLETE");
   });
 
   it("deletes logical authority atomically while preserving shared bytes and tombstone", async () => {

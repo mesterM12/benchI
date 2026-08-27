@@ -1,10 +1,11 @@
 import { join } from "node:path";
 import {
+  createWorktree,
   opencode,
-  run as runSandcastle,
   type AgentStreamEvent,
   type OpenCodeOptions,
-  type SandboxProvider
+  type SandboxProvider,
+  type Worktree
 } from "@ai-hero/sandcastle";
 
 export type Platform = "native-linux";
@@ -47,14 +48,18 @@ export type OpenCodeTrialEvent =
   | { type: "toolCall"; name: string; formattedArgs: string; iteration: number; occurredAt: string }
   | { type: "raw"; line: string; iteration: number; occurredAt: string };
 export type OpenCodeTrialResult = {
-  status: "completed";
+  status: "completed" | "failed" | "cancelled";
+  error: { name: string; message: string } | null;
   completionSignal: string | null;
   events: OpenCodeTrialEvent[];
-  stdout: string;
-  stderr: null;
+  output: {
+    stdout: { availability: "complete" | "stream-events-only"; text: string | null };
+    stderr: { availability: "unavailable"; text: null; reason: "Sandcastle public agent-run API does not expose stderr" };
+  };
   commits: string[];
   branch: string;
   preservedWorktreePath: string | null;
+  cleanup: (() => Promise<void>) | null;
   runtime: {
     adapter: "sandcastle/opencode";
     model: string;
@@ -63,7 +68,8 @@ export type OpenCodeTrialResult = {
     durationMs: number;
     iterations: number;
     logFilePath: string | null;
-    stderrCapture: "not-exposed-by-sandcastle";
+    worktreePath: string | null;
+    worktreeDisposition: "not-created" | "cleaned" | "preserved";
   };
 };
 export type OpenCodeTrialInput = {
@@ -85,42 +91,123 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
   const started = now();
   const events: OpenCodeTrialEvent[] = [];
   const options: OpenCodeOptions = { variant: input.variant, agent: input.agent, env: input.env };
-  const result = await runSandcastle({
-    agent: opencode(input.model, options),
-    sandbox: input.sandbox,
-    cwd: input.repositoryPath,
-    prompt: input.prompt,
-    maxIterations: 1,
-    branchStrategy: { type: "branch", branch: `benchi/${input.attemptId}` },
-    logging: {
-      type: "file",
-      path: join(input.repositoryPath, ".sandcastle", "logs", `${input.attemptId}.log`),
-      verbose: false,
-      onAgentStreamEvent: (event) => events.push(normalizeAgentEvent(event))
-    },
-    signal: input.signal
-  });
-  const finished = now();
+  const branch = `benchi/${input.attemptId}`;
+  let worktree: Worktree;
+  try {
+    worktree = await createWorktree({ cwd: input.repositoryPath, branchStrategy: { type: "branch", branch } });
+  } catch (error) {
+    const finished = now();
+    return {
+      status: input.signal?.aborted ? "cancelled" : "failed",
+      error: errorDetails(error),
+      completionSignal: null,
+      events,
+      output: unavailableOutput(),
+      commits: [],
+      branch,
+      preservedWorktreePath: null,
+      cleanup: null,
+      runtime: {
+        adapter: "sandcastle/opencode",
+        model: input.model,
+        startedAt: started.toISOString(),
+        finishedAt: finished.toISOString(),
+        durationMs: finished.getTime() - started.getTime(),
+        iterations: 0,
+        logFilePath: null,
+        worktreePath: null,
+        worktreeDisposition: "not-created"
+      }
+    };
+  }
+  try {
+    const result = await worktree.run({
+      agent: opencode(input.model, options),
+      sandbox: input.sandbox,
+      prompt: input.prompt,
+      maxIterations: 1,
+      logging: {
+        type: "file",
+        path: join(input.repositoryPath, ".sandcastle", "logs", `${input.attemptId}.log`),
+        verbose: false,
+        onAgentStreamEvent: (event) => events.push(normalizeAgentEvent(event))
+      },
+      signal: input.signal
+    });
+    const close = await worktree.close();
+    return evidence(input, started, now(), events, worktree, {
+      status: "completed",
+      error: null,
+      completionSignal: result.completionSignal ?? null,
+      stdout: result.stdout,
+      commits: result.commits.map(({ sha }) => sha),
+      iterations: result.iterations.length,
+      logFilePath: result.logFilePath ?? null,
+      preservedWorktreePath: close.preservedWorktreePath ?? null
+    });
+  } catch (error) {
+    return evidence(input, started, now(), events, worktree, {
+      status: input.signal?.aborted ? "cancelled" : "failed",
+      error: errorDetails(error),
+      completionSignal: null,
+      stdout: null,
+      commits: [],
+      iterations: 0,
+      logFilePath: null,
+      preservedWorktreePath: worktree.worktreePath
+    });
+  }
+}
+
+type Evidence = {
+  status: OpenCodeTrialResult["status"];
+  error: OpenCodeTrialResult["error"];
+  completionSignal: string | null;
+  stdout: string | null;
+  commits: string[];
+  iterations: number;
+  logFilePath: string | null;
+  preservedWorktreePath: string | null;
+};
+
+function evidence(input: OpenCodeTrialInput, started: Date, finished: Date, events: OpenCodeTrialEvent[], worktree: Worktree, value: Evidence): OpenCodeTrialResult {
+  const preserved = value.preservedWorktreePath !== null;
   return {
-    status: "completed",
-    completionSignal: result.completionSignal ?? null,
+    status: value.status,
+    error: value.error,
+    completionSignal: value.completionSignal,
     events,
-    stdout: result.stdout,
-    stderr: null,
-    commits: result.commits.map(({ sha }) => sha),
-    branch: result.branch,
-    preservedWorktreePath: result.preservedWorktreePath ?? null,
+    output: value.stdout === null ? unavailableOutput() : {
+      stdout: { availability: "complete", text: value.stdout },
+      stderr: unavailableOutput().stderr
+    },
+    commits: value.commits,
+    branch: worktree.branch,
+    preservedWorktreePath: value.preservedWorktreePath,
+    cleanup: preserved ? async () => { await worktree.close(); } : null,
     runtime: {
       adapter: "sandcastle/opencode",
       model: input.model,
       startedAt: started.toISOString(),
       finishedAt: finished.toISOString(),
       durationMs: finished.getTime() - started.getTime(),
-      iterations: result.iterations.length,
-      logFilePath: result.logFilePath ?? null,
-      stderrCapture: "not-exposed-by-sandcastle"
+      iterations: value.iterations,
+      logFilePath: value.logFilePath,
+      worktreePath: worktree.worktreePath,
+      worktreeDisposition: preserved ? "preserved" : "cleaned"
     }
   };
+}
+
+function unavailableOutput(): OpenCodeTrialResult["output"] {
+  return {
+    stdout: { availability: "stream-events-only", text: null },
+    stderr: { availability: "unavailable", text: null, reason: "Sandcastle public agent-run API does not expose stderr" }
+  };
+}
+
+function errorDetails(error: unknown): { name: string; message: string } {
+  return error instanceof Error ? { name: error.name, message: error.message } : { name: "Error", message: String(error) };
 }
 
 function normalizeAgentEvent(event: AgentStreamEvent): OpenCodeTrialEvent {

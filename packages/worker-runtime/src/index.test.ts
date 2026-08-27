@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { run as runSandcastle, type RunOptions, type RunResult, type SandboxProvider } from "@ai-hero/sandcastle";
+import { createWorktree, type SandboxProvider, type Worktree, type WorktreeRunOptions, type WorktreeRunResult } from "@ai-hero/sandcastle";
 import {
   WorkerRuntime,
   runOpenCodeTrial,
@@ -10,7 +10,7 @@ import {
 
 vi.mock("@ai-hero/sandcastle", async (importOriginal) => ({
   ...await importOriginal<typeof import("@ai-hero/sandcastle")>(),
-  run: vi.fn()
+  createWorktree: vi.fn()
 }));
 
 const profile: CapabilityProfile = {
@@ -91,9 +91,9 @@ describe("native Linux conformance", () => {
 
 describe("OpenCode trial execution", () => {
   it("returns normalized Sandcastle evidence from an isolated branch", async () => {
-    let received: RunOptions | undefined;
+    let received: WorktreeRunOptions | undefined;
     const sandbox = {} as SandboxProvider;
-    const execute = async (options: RunOptions): Promise<RunResult> => {
+    const execute = async (options: WorktreeRunOptions): Promise<WorktreeRunResult> => {
       received = options;
       options.logging?.type === "file" && options.logging.onAgentStreamEvent?.({
         type: "toolCall",
@@ -111,7 +111,12 @@ describe("OpenCode trial execution", () => {
         logFilePath: "/repo/.sandcastle/logs/trial-attempt-7.log"
       };
     };
-    vi.mocked(runSandcastle).mockImplementation(execute);
+    vi.mocked(createWorktree).mockResolvedValue({
+      branch: "benchi/trial-attempt-7",
+      worktreePath: "/repo/.sandcastle/worktrees/trial-attempt-7",
+      run: execute,
+      close: async () => ({})
+    } as unknown as Worktree);
 
     const result = await runOpenCodeTrial({
       attemptId: "trial-attempt-7",
@@ -125,24 +130,30 @@ describe("OpenCode trial execution", () => {
       })()
     });
 
-    expect(received).toMatchObject({
+    expect(createWorktree).toHaveBeenCalledWith({
       cwd: "/repo",
+      branchStrategy: { type: "branch", branch: "benchi/trial-attempt-7" }
+    });
+    expect(received).toMatchObject({
       prompt: "Fix the failing test and commit the change.",
       maxIterations: 1,
-      branchStrategy: { type: "branch", branch: "benchi/trial-attempt-7" },
       logging: { type: "file", verbose: false }
     });
     expect(received?.agent.name).toBe("opencode");
     expect(received?.sandbox).toBe(sandbox);
     expect(result).toEqual({
       status: "completed",
+      error: null,
       completionSignal: "<promise>COMPLETE</promise>",
       events: [{ type: "toolCall", name: "edit", formattedArgs: "src/add.ts", iteration: 1, occurredAt: "2026-08-27T12:00:01.000Z" }],
-      stdout: "fixed\n<promise>COMPLETE</promise>",
-      stderr: null,
+      output: {
+        stdout: { availability: "complete", text: "fixed\n<promise>COMPLETE</promise>" },
+        stderr: { availability: "unavailable", text: null, reason: "Sandcastle public agent-run API does not expose stderr" }
+      },
       commits: ["abc123"],
       branch: "benchi/trial-attempt-7",
       preservedWorktreePath: null,
+      cleanup: null,
       runtime: {
         adapter: "sandcastle/opencode",
         model: "openai/gpt-5.6",
@@ -151,8 +162,70 @@ describe("OpenCode trial execution", () => {
         durationMs: 2000,
         iterations: 1,
         logFilePath: "/repo/.sandcastle/logs/trial-attempt-7.log",
-        stderrCapture: "not-exposed-by-sandcastle"
+        worktreePath: "/repo/.sandcastle/worktrees/trial-attempt-7",
+        worktreeDisposition: "cleaned"
       }
+    });
+  });
+
+  it.each(["failed", "cancelled"] as const)("returns %s evidence and preserves its worktree", async (status) => {
+    const reason = new Error(status);
+    const close = vi.fn(async () => ({}));
+    const run = vi.fn(async () => { throw reason; });
+    vi.mocked(createWorktree).mockResolvedValue({
+      branch: "benchi/attempt-8",
+      worktreePath: "/repo/.sandcastle/worktrees/attempt-8",
+      run,
+      close
+    } as unknown as Worktree);
+    const controller = new AbortController();
+    if (status === "cancelled") controller.abort(reason);
+
+    const result = await runOpenCodeTrial({
+      attemptId: "attempt-8",
+      repositoryPath: "/repo",
+      prompt: "fix it",
+      model: "model",
+      sandbox: {} as SandboxProvider,
+      signal: controller.signal
+    });
+
+    expect(result).toMatchObject({
+      status,
+      error: { name: "Error", message: status },
+      completionSignal: null,
+      events: [],
+      output: {
+        stdout: { availability: "stream-events-only", text: null },
+        stderr: { availability: "unavailable", text: null }
+      },
+      commits: [],
+      branch: "benchi/attempt-8",
+      preservedWorktreePath: "/repo/.sandcastle/worktrees/attempt-8",
+      runtime: { worktreeDisposition: "preserved" }
+    });
+    expect(close).not.toHaveBeenCalled();
+    expect(result.cleanup).toBeTypeOf("function");
+    await result.cleanup?.();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("returns structured evidence when Sandcastle cannot create a worktree", async () => {
+    vi.mocked(createWorktree).mockRejectedValue(new Error("git unavailable"));
+    const result = await runOpenCodeTrial({
+      attemptId: "attempt-9",
+      repositoryPath: "/repo",
+      prompt: "fix it",
+      model: "model",
+      sandbox: {} as SandboxProvider
+    });
+    expect(result).toMatchObject({
+      status: "failed",
+      error: { message: "git unavailable" },
+      branch: "benchi/attempt-9",
+      preservedWorktreePath: null,
+      cleanup: null,
+      runtime: { worktreePath: null, worktreeDisposition: "not-created" }
     });
   });
 });

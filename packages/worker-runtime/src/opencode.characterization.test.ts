@@ -28,6 +28,8 @@ describe.runIf(characterize)("real OpenCode through Sandcastle", () => {
       await exec("git", ["config", "user.email", "benchi@example.invalid"], { cwd: repositoryPath });
       await exec("git", ["add", "."], { cwd: repositoryPath });
       await exec("git", ["commit", "-m", "add failing task"], { cwd: repositoryPath });
+      const { stdout: baseRevision } = await exec("git", ["rev-parse", "HEAD"], { cwd: repositoryPath });
+      await expect(exec("npm", ["test"], { cwd: repositoryPath })).rejects.toMatchObject({ code: 1 });
 
       const result = await runOpenCodeTrial({
         attemptId: "real-opencode",
@@ -42,6 +44,11 @@ describe.runIf(characterize)("real OpenCode through Sandcastle", () => {
       expect(result.commits).toHaveLength(1);
       expect(result.branch).toBe("benchi/real-opencode");
       expect(result.preservedWorktreePath).toBeNull();
+      await expect(exec("git", ["merge-base", "--is-ancestor", baseRevision.trim(), result.commits[0]!], { cwd: repositoryPath })).resolves.toBeDefined();
+      const { stdout: branchRevision } = await exec("git", ["rev-parse", result.branch], { cwd: repositoryPath });
+      expect(result.commits.at(-1)).toBe(branchRevision.trim());
+      const { stdout: changedFiles } = await exec("git", ["diff-tree", "--no-commit-id", "--name-only", "-r", result.commits[0]!], { cwd: repositoryPath });
+      expect(changedFiles.trim().split("\n")).toContain("add.js");
       await exec("git", ["checkout", result.branch], { cwd: repositoryPath });
       await expect(exec("npm", ["test"], { cwd: repositoryPath })).resolves.toMatchObject({ stderr: "" });
     } finally {

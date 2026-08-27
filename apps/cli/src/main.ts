@@ -7,6 +7,15 @@ import { previewEvalSuite } from "@benchi/contracts";
 type Request = (url: string | URL | globalThis.Request, init?: RequestInit) => Promise<Response>;
 
 export async function runCli(args: string[], write = console.log, request: Request = fetch): Promise<number> {
+  if (args[0] === "trial" && args[1] === "submit" && args[2]) {
+    const response = await request(`${process.env.BENCHI_URL ?? "http://localhost:3000"}/api/v1/submitted-trials`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": randomUUID() },
+      body: await readFile(args[2], "utf8")
+    });
+    write(await response.text());
+    return response.ok ? 0 : 1;
+  }
   if (args[0] === "run" && (args[1] === "freeze" || args[1] === "inspect" || args[1] === "start") && args[2]) {
     const [, command, id] = args;
     const path = command === "freeze" ? "/api/v1/eval-runs" : `/api/v1/eval-runs/${encodeURIComponent(id)}${command === "start" ? ":start" : ""}`;
@@ -21,7 +30,7 @@ export async function runCli(args: string[], write = console.log, request: Reque
   const [command, file] = args;
   if (command === "suite") return runSuite(args.slice(1), write);
   if (command !== "preview" || !file) {
-    write("usage: benchi preview <suite.yaml> [--json] | benchi suite <validate|create|revise|list|get> | benchi run <freeze|inspect|start> <id>");
+    write("usage: benchi preview <suite.yaml> [--json] | benchi suite <validate|create|revise|list|get> | benchi run <freeze|inspect|start> <id> | benchi trial submit <bundle.json>");
     return 2;
   }
   const result = previewEvalSuite(await readFile(file, "utf8"));

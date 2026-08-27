@@ -2,34 +2,35 @@ import { createHash } from "node:crypto";
 import { parse } from "yaml";
 
 export type Diagnostic = { path: string; code: string };
-export type Trial = {
+type TrialCell = {
   id: string;
-  agentId: string;
   taskId: string;
   scenarioVariantId: string;
   repetitionIndex: number;
 };
+export type Trial = TrialCell & ({ agentId: string; submissionSlotId?: never } | { agentId?: never; submissionSlotId: string });
 export type PreviewResult =
   | { ok: true; canonicalJson: string; contentIdentity: string; trials: Trial[] }
   | { ok: false; diagnostics: Diagnostic[] };
 
 type Item = { id: string };
-type Selector = { agent: string; task: string; scenarioVariant: string; repetitionIndex: number };
+type Selector = { agent?: string; submissionSlot?: string; task: string; scenarioVariant: string; repetitionIndex: number };
 type Suite = {
   kind: "EvalSuite";
   schemaVersion: "1";
   id: string;
   agents: Item[];
+  submissionSlots?: Item[];
   tasks: Item[];
   scenarioVariants?: Item[];
   matrix: { repetitions: number; include?: Selector[]; exclude?: Selector[] };
 };
 
 const fields = {
-  root: new Set(["kind", "schemaVersion", "id", "agents", "tasks", "scenarioVariants", "matrix"]),
+  root: new Set(["kind", "schemaVersion", "id", "agents", "submissionSlots", "tasks", "scenarioVariants", "matrix"]),
   item: new Set(["id"]),
   matrix: new Set(["repetitions", "include", "exclude"]),
-  selector: new Set(["agent", "task", "scenarioVariant", "repetitionIndex"])
+  selector: new Set(["agent", "submissionSlot", "task", "scenarioVariant", "repetitionIndex"])
 };
 
 export function previewEvalSuite(source: string): PreviewResult {
@@ -43,7 +44,7 @@ export function previewEvalSuite(source: string): PreviewResult {
 
   const diagnostics: Diagnostic[] = [];
   unknownFields(value, fields.root, "", diagnostics);
-  for (const [name, allowed] of [["agents", fields.item], ["tasks", fields.item], ["scenarioVariants", fields.item]] as const) {
+  for (const [name, allowed] of [["agents", fields.item], ["submissionSlots", fields.item], ["tasks", fields.item], ["scenarioVariants", fields.item]] as const) {
     if (Array.isArray(value[name])) value[name].forEach((item, index) => unknownFields(item, allowed, `/${name}/${index}`, diagnostics));
   }
   if (record(value.matrix)) {
@@ -57,6 +58,7 @@ export function previewEvalSuite(source: string): PreviewResult {
   if (value.schemaVersion !== "1") return invalid("/schemaVersion", "UNSUPPORTED_SCHEMA_VERSION");
   if (typeof value.id !== "string" || !value.id) return invalid("/id", "INVALID_ID");
   if (!items(value.agents)) return invalid("/agents", "INVALID_AGENTS");
+  if (value.submissionSlots !== undefined && !items(value.submissionSlots)) return invalid("/submissionSlots", "INVALID_SUBMISSION_SLOTS");
   if (!items(value.tasks)) return invalid("/tasks", "INVALID_TASKS");
   if (value.scenarioVariants !== undefined && !items(value.scenarioVariants)) return invalid("/scenarioVariants", "INVALID_SCENARIO_VARIANTS");
   if (!record(value.matrix) || !Number.isInteger(value.matrix.repetitions) || Number(value.matrix.repetitions) < 1) return invalid("/matrix/repetitions", "INVALID_REPETITIONS");
@@ -69,19 +71,24 @@ export function previewEvalSuite(source: string): PreviewResult {
   for (const [group, index, selector] of selectors) {
     const path = `/matrix/${group}/${index}`;
     if (!record(selector)) return invalid(path, "INVALID_SELECTOR");
-    if (!suite.agents.some(({ id }) => id === selector.agent)) return invalid(`${path}/agent`, "UNKNOWN_AGENT");
+    if ((selector.agent === undefined) === (selector.submissionSlot === undefined)) return invalid(path, "INVALID_PARTICIPANT");
+    if (selector.agent !== undefined && !suite.agents.some(({ id }) => id === selector.agent)) return invalid(`${path}/agent`, "UNKNOWN_AGENT");
+    if (selector.submissionSlot !== undefined && !(suite.submissionSlots ?? []).some(({ id }) => id === selector.submissionSlot)) return invalid(`${path}/submissionSlot`, "UNKNOWN_SUBMISSION_SLOT");
     if (!suite.tasks.some(({ id }) => id === selector.task)) return invalid(`${path}/task`, "UNKNOWN_TASK");
     if (!variants.some(({ id }) => id === selector.scenarioVariant)) return invalid(`${path}/scenarioVariant`, "UNKNOWN_SCENARIO_VARIANT");
     if (!Number.isInteger(selector.repetitionIndex) || selector.repetitionIndex < 1 || selector.repetitionIndex > suite.matrix.repetitions) return invalid(`${path}/repetitionIndex`, "INVALID_REPETITION_INDEX");
   }
 
-  let trials = suite.agents.flatMap((agent) => suite.tasks.flatMap((task) => variants.flatMap((variant) =>
-    Array.from({ length: suite.matrix.repetitions }, (_, index) => trial(agent.id, task.id, variant.id, index + 1)))));
+  let trials = [
+    ...suite.agents.map((item) => ({ kind: "agent" as const, item })),
+    ...(suite.submissionSlots ?? []).map((item) => ({ kind: "submission" as const, item }))
+  ].flatMap((participant) => suite.tasks.flatMap((task) => variants.flatMap((variant) =>
+    Array.from({ length: suite.matrix.repetitions }, (_, index) => trial(participant.item.id, task.id, variant.id, index + 1, participant.kind)))));
   const excluded = new Set((suite.matrix.exclude ?? []).map(selectorKey));
   trials = trials.filter((entry) => !excluded.has(trialKey(entry)));
   for (const [index, selector] of (suite.matrix.include ?? []).entries()) {
     if (trials.some((entry) => trialKey(entry) === selectorKey(selector))) return invalid(`/matrix/include/${index}`, "DUPLICATE_CELL");
-    trials.push(trial(selector.agent, selector.task, selector.scenarioVariant, selector.repetitionIndex));
+    trials.push(trial(participant(selector), selector.task, selector.scenarioVariant, selector.repetitionIndex, selector.submissionSlot ? "submission" : "agent"));
   }
   if (!trials.length) return invalid("/matrix", "EMPTY_MATRIX");
 
@@ -102,11 +109,13 @@ function unknownFields(value: unknown, allowed: Set<string>, path: string, diagn
 function invalid(path: string, code: string): PreviewResult {
   return { ok: false, diagnostics: [{ path, code }] };
 }
-function trial(agentId: string, taskId: string, scenarioVariantId: string, repetitionIndex: number): Trial {
-  return { id: `${agentId}__${taskId}__${scenarioVariantId}__${repetitionIndex}`, agentId, taskId, scenarioVariantId, repetitionIndex };
+function trial(participantId: string, taskId: string, scenarioVariantId: string, repetitionIndex: number, kind: "agent" | "submission" = "agent"): Trial {
+  const cell = { id: `${participantId}__${taskId}__${scenarioVariantId}__${repetitionIndex}`, taskId, scenarioVariantId, repetitionIndex };
+  return kind === "agent" ? { ...cell, agentId: participantId } : { ...cell, submissionSlotId: participantId };
 }
-function selectorKey(value: Selector) { return `${value.agent}\0${value.task}\0${value.scenarioVariant}\0${value.repetitionIndex}`; }
-function trialKey(value: Trial) { return `${value.agentId}\0${value.taskId}\0${value.scenarioVariantId}\0${value.repetitionIndex}`; }
+function participant(value: Selector) { return value.agent ?? value.submissionSlot!; }
+function selectorKey(value: Selector) { return `${participant(value)}\0${value.task}\0${value.scenarioVariant}\0${value.repetitionIndex}`; }
+function trialKey(value: Trial) { return `${value.agentId ?? value.submissionSlotId}\0${value.taskId}\0${value.scenarioVariantId}\0${value.repetitionIndex}`; }
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (record(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;

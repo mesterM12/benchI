@@ -1,3 +1,4 @@
+import { migrate as migrateSubmittedTrials } from "@benchi/submitted-trials";
 import { definitions, pool } from "../lib/server";
 
 await pool.query(`
@@ -29,4 +30,5 @@ await pool.query(`
   CREATE INDEX IF NOT EXISTS verification_identifier_idx ON verification (identifier);
 `);
 await definitions.migrate();
+await migrateSubmittedTrials(pool);
 await pool.end();

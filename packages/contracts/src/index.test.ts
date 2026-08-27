@@ -53,6 +53,25 @@ describe("previewEvalSuite", () => {
     expect(result.ok && result.trials[0]).toMatchObject({ scenarioVariantId: "baseline", repetitionIndex: 1 });
   });
 
+  it("expands Submission Slots as deterministic Trial Matrix participants", () => {
+    const result = previewEvalSuite(`kind: EvalSuite
+schemaVersion: "1"
+id: submitted
+agents: [{id: agent}]
+submissionSlots: [{id: external}]
+tasks: [{id: task}]
+matrix:
+  repetitions: 2
+  exclude: [{submissionSlot: external, task: task, scenarioVariant: baseline, repetitionIndex: 2}]
+`);
+
+    expect(result.ok && result.trials).toEqual([
+      { id: "agent__task__baseline__1", agentId: "agent", taskId: "task", scenarioVariantId: "baseline", repetitionIndex: 1 },
+      { id: "agent__task__baseline__2", agentId: "agent", taskId: "task", scenarioVariantId: "baseline", repetitionIndex: 2 },
+      { id: "external__task__baseline__1", submissionSlotId: "external", taskId: "task", scenarioVariantId: "baseline", repetitionIndex: 1 }
+    ]);
+  });
+
   it.each([
     ["unknown field", validSuite + "surprise: true\n", [{ path: "/surprise", code: "UNKNOWN_FIELD" }]],
     ["duplicate cell", validSuite.replace("repetitionIndex: 2\n", "repetitionIndex: 1\n"), [{ path: "/matrix/include/0", code: "DUPLICATE_CELL" }]],

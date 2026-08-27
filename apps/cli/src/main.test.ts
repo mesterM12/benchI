@@ -45,4 +45,18 @@ describe("benchi", () => {
     expect(requests).toEqual([{ url: `http://localhost:3000${path}`, method: body === undefined ? "GET" : "POST", body }]);
     expect(JSON.parse(output[0]!)).toEqual({ data: { id: "run-1" } });
   });
+
+  it("publishes Submitted Trials through API", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "benchi-"));
+    const file = join(directory, "submission.json");
+    await writeFile(file, JSON.stringify({ id: "submitted-1" }));
+    const requests: Array<{ url: string; body: string | null | undefined }> = [];
+    const request = async (url: string | URL | Request, init?: RequestInit) => {
+      requests.push({ url: String(url), body: init?.body?.toString() });
+      return new Response("{}", { status: 201 });
+    };
+
+    expect(await runCli(["trial", "submit", file], () => {}, request)).toBe(0);
+    expect(requests).toEqual([{ url: "http://localhost:3000/api/v1/submitted-trials", body: JSON.stringify({ id: "submitted-1" }) }]);
+  });
 });

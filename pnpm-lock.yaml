@@ -33,6 +33,9 @@ importers:
       '@benchi/evaluation-definition':
         specifier: workspace:*
         version: link:../../packages/evaluation-definition
+      '@benchi/submitted-trials':
+        specifier: workspace:*
+        version: link:../../packages/submitted-trials
       better-auth:
         specifier: 1.7.2
         version: 1.7.2(next@16.3.3(@types/node@24.3.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(pg@8.16.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@3.2.4(@types/node@24.3.0)(tsx@4.20.5)(yaml@2.9.0))
@@ -145,6 +148,28 @@ importers:
 
   packages/secret-custody:
     dependencies:
+      pg:
+        specifier: ^8.16.3
+        version: 8.16.3
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.3.0
+      '@types/pg':
+        specifier: ^8.15.5
+        version: 8.15.5
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.2
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.4(@types/node@24.3.0)(tsx@4.20.5)(yaml@2.9.0)
+
+  packages/submitted-trials:
+    dependencies:
+      '@benchi/scoring':
+        specifier: workspace:*
+        version: link:../scoring
       pg:
         specifier: ^8.16.3
         version: 8.16.3

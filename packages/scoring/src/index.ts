@@ -15,8 +15,7 @@ export type ScorerResult = {
 
 export type ScoringAttempt =
   | { attempt: number; status: "completed"; result: ScorerResult }
-  | { attempt: number; status: "infrastructure-failure"; message: string }
-  | { attempt: number; status: "evaluation-outcome"; code: string };
+  | { attempt: number; status: "infrastructure-failure"; message: string };
 
 const decimalPattern = /^(?:0|1|0\.\d{0,11}[1-9])$/;
 const contentIdentityPattern = /^sha256:[0-9a-f]{64}$/;
@@ -60,8 +59,8 @@ export async function runScorer(
     try {
       const result = validateScorerResult(await execute(manifest, attempt));
       if (!result.ok) {
-        attempts.push({ attempt, status: "evaluation-outcome", code: result.code });
-        break;
+        attempts.push({ attempt, status: "infrastructure-failure", message: result.code });
+        continue;
       }
       attempts.push({ attempt, status: "completed", result: result.value });
       break;

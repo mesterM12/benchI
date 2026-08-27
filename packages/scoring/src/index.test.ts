@@ -58,6 +58,17 @@ describe("scorer protocol", () => {
     ]);
     expect(outcome.attempts.every(Object.isFrozen)).toBe(true);
   });
+
+  it("classifies invalid scorer output as retryable infrastructure failure", async () => {
+    const outcome = await runScorer(manifest, async (_, attempt) => attempt === 1
+      ? { kind: "ScorerResult", schemaVersion: "1", acceptanceJudgment: "accepted", normalizedScore: "2" }
+      : { kind: "ScorerResult", schemaVersion: "1", acceptanceJudgment: "rejected", normalizedScore: "0" }, 2);
+
+    expect(outcome.attempts).toEqual([
+      { attempt: 1, status: "infrastructure-failure", message: "INVALID_NORMALIZED_SCORE" },
+      { attempt: 2, status: "completed", result: { kind: "ScorerResult", schemaVersion: "1", acceptanceJudgment: "rejected", normalizedScore: "0" } }
+    ]);
+  });
 });
 
 describe("weighted-mean/v1", () => {

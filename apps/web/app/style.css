@@ -16,10 +16,12 @@ h2, .editor-head p { margin: 0; }
 h2 { font-size: 20px; }
 .editor-head p, label { color: #58635d; font-size: 13px; }
 .actions { display: flex; gap: 10px; }
+.suite-picker { padding: 0; text-transform: none; letter-spacing: 0; }
+.suite-picker select { display: block; min-height: 26px; max-width: 220px; border: 1px solid var(--line); border-radius: 6px; background: white; color: var(--ink); }
 button { min-height: 44px; padding: 0 18px; border: 0; border-radius: 8px; color: white; background: var(--green); font: inherit; font-weight: 650; cursor: pointer; }
 button.secondary { color: var(--ink); background: #e4e6dd; }
 button:disabled { cursor: wait; opacity: .55; }
-button:focus-visible, textarea:focus-visible, a:focus-visible { outline: 3px solid #d18d25; outline-offset: 3px; }
+button:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid #d18d25; outline-offset: 3px; }
 input:focus-visible { outline: 3px solid #d18d25; outline-offset: 2px; }
 label { display: block; padding: 14px 24px 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
 textarea { display: block; width: 100%; min-height: 420px; padding: 8px 24px 24px; resize: vertical; border: 0; outline: 0; color: #183328; background: var(--field); caret-color: var(--green); font: 15px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2; }

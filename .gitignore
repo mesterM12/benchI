@@ -2,6 +2,7 @@ node_modules/
 .turbo/
 dist/
 .next/
+*.tsbuildinfo
 coverage/
 
 .DS_Store

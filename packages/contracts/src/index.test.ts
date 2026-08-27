@@ -58,6 +58,7 @@ describe("previewEvalSuite", () => {
     ["duplicate cell", validSuite.replace("repetitionIndex: 2\n", "repetitionIndex: 1\n"), [{ path: "/matrix/include/0", code: "DUPLICATE_CELL" }]],
     ["invalid exclusion", validSuite.replace("agent: claude\n      task: cart", "agent: missing\n      task: cart"), [{ path: "/matrix/exclude/0/agent", code: "UNKNOWN_AGENT" }]],
     ["invalid inclusion", validSuite.replace(/(include:[\s\S]*repetitionIndex:) 2/, "$1 0"), [{ path: "/matrix/include/0/repetitionIndex", code: "INVALID_REPETITION_INDEX" }]],
+    ["invalid selector list", `kind: EvalSuite\nschemaVersion: "1"\nid: bad\nagents: [{id: a}]\ntasks: [{id: t}]\nmatrix: {repetitions: 1, include: nope}\n`, [{ path: "/matrix/include", code: "INVALID_INCLUSIONS" }]],
     ["empty matrix", `kind: EvalSuite\nschemaVersion: "1"\nid: empty\nagents: [{id: a}]\ntasks: []\nmatrix: {repetitions: 1}\n`, [{ path: "/matrix", code: "EMPTY_MATRIX" }]]
   ])("reports stable diagnostics for %s", (_, yaml, diagnostics) => {
     const result = previewEvalSuite(yaml);

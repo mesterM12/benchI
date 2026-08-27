@@ -60,6 +60,8 @@ export function previewEvalSuite(source: string): PreviewResult {
   if (!items(value.tasks)) return invalid("/tasks", "INVALID_TASKS");
   if (value.scenarioVariants !== undefined && !items(value.scenarioVariants)) return invalid("/scenarioVariants", "INVALID_SCENARIO_VARIANTS");
   if (!record(value.matrix) || !Number.isInteger(value.matrix.repetitions) || Number(value.matrix.repetitions) < 1) return invalid("/matrix/repetitions", "INVALID_REPETITIONS");
+  if (value.matrix.include !== undefined && !Array.isArray(value.matrix.include)) return invalid("/matrix/include", "INVALID_INCLUSIONS");
+  if (value.matrix.exclude !== undefined && !Array.isArray(value.matrix.exclude)) return invalid("/matrix/exclude", "INVALID_EXCLUSIONS");
 
   const suite = value as Suite;
   const variants = suite.scenarioVariants ?? [{ id: "baseline" }];

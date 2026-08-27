@@ -1,0 +1,93 @@
+x-application: &application
+  build:
+    context: .
+    target: application
+  image: benchi:${BENCHI_VERSION:-local}
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp
+  environment: &application-environment
+    DATABASE_URL: postgres://benchi:${POSTGRES_PASSWORD:-benchi-local}@postgres:5432/benchi
+    OBJECT_STORAGE_ENDPOINT: http://object-storage:9000
+    OBJECT_STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:-benchi}
+    OBJECT_STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-benchi-local}
+    BACKUP_SIGNING_KEY: ${BACKUP_SIGNING_KEY:?set BACKUP_SIGNING_KEY}
+    RELEASE_SIGNING_KEY: ${RELEASE_SIGNING_KEY:?set RELEASE_SIGNING_KEY}
+  depends_on:
+    postgres:
+      condition: service_healthy
+    object-storage:
+      condition: service_started
+
+services:
+  postgres:
+    image: postgres:17.6-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: benchi
+      POSTGRES_USER: benchi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-benchi-local}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U benchi -d benchi"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  object-storage:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address :9001
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-benchi}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-benchi-local}
+    volumes:
+      - object-data:/data
+
+  bootstrap:
+    <<: *application
+    restart: "no"
+    read_only: false
+    environment:
+      <<: *application-environment
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET}
+      BETTER_AUTH_URL: http://web:3000
+      BENCHI_ADMIN_EMAIL: ${BENCHI_ADMIN_EMAIL:?set BENCHI_ADMIN_EMAIL}
+      BENCHI_ADMIN_PASSWORD: ${BENCHI_ADMIN_PASSWORD:?set BENCHI_ADMIN_PASSWORD}
+    command: ["sh", "-c", "pnpm --filter @benchi/web migrate && pnpm --filter @benchi/web bootstrap-admin \"$$BENCHI_ADMIN_EMAIL\" \"$$BENCHI_ADMIN_PASSWORD\""]
+
+  web:
+    <<: *application
+    command: ["pnpm", "--filter", "@benchi/web", "exec", "next", "start", "-H", "0.0.0.0"]
+    environment:
+      <<: *application-environment
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
+    ports:
+      - "${BENCHI_PORT:-3000}:3000"
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+
+  orchestrator:
+    <<: *application
+    command: ["pnpm", "--filter", "@benchi/ops-runtime", "start"]
+    environment:
+      <<: *application-environment
+      BENCHI_ROLE: orchestrator
+      PORT: 3001
+
+  worker:
+    <<: *application
+    command: ["pnpm", "--filter", "@benchi/ops-runtime", "start"]
+    environment:
+      <<: *application-environment
+      BENCHI_ROLE: worker
+      PORT: 3002
+
+volumes:
+  postgres-data:
+  object-data:

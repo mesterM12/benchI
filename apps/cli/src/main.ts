@@ -21,15 +21,15 @@ export async function runCli(args: string[], write = console.log, request: Reque
     write(await response.text());
     return response.ok ? 0 : 1;
   }
-  if (args[0] === "run" && (args[1] === "freeze" || args[1] === "inspect") && args[2]) {
+  if (args[0] === "run" && (args[1] === "freeze" || args[1] === "start" || args[1] === "inspect") && args[2]) {
     const [, command, id] = args;
     const revision = option(args, "--revision");
     if (command === "freeze" && (!revision || !Number.isInteger(Number(revision)) || Number(revision) < 1)) {
       write("usage: benchi run freeze <suite-id> --revision <n>");
       return 2;
     }
-    const path = command === "freeze" ? "/api/v1/eval-runs" : `/api/v1/eval-runs/${encodeURIComponent(id)}`;
-    const body = command === "freeze" ? { suiteId: id, revision: Number(revision) } : undefined;
+    const path = command === "freeze" ? "/api/v1/eval-runs" : `/api/v1/eval-runs/${encodeURIComponent(id)}${command === "start" ? "/start" : ""}`;
+    const body = command === "freeze" ? { suiteId: id, revision: Number(revision) } : command === "start" ? {} : undefined;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (session) headers.Cookie = session;
     if (body !== undefined) headers["Idempotency-Key"] = option(args, "--idempotency-key") ?? randomUUID();

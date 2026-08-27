@@ -1,4 +1,10 @@
+import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
+import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
   createWorktree,
   opencode,
@@ -160,6 +166,30 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
       logFilePath: null,
       preservedWorktreePath
     });
+  }
+}
+
+export async function executeFrozenOpenCodeTrial(input: { attemptId: string; remote: string; commit: string; prompt: string; acceptanceCommand: string; model: string }) {
+  const repositoryPath = await mkdtemp(join(tmpdir(), "benchi-trial-"));
+  try {
+    await promisify(execFile)("git", ["clone", "--no-checkout", "--", input.remote, repositoryPath]);
+    await promisify(execFile)("git", ["-C", repositoryPath, "checkout", "--detach", input.commit]);
+    const result = await runOpenCodeTrial({
+      attemptId: input.attemptId,
+      repositoryPath,
+      prompt: `${input.prompt}\nRun ${input.acceptanceCommand}, fix failures, rerun it, and commit the completed work.`,
+      model: input.model,
+      sandbox: noSandbox()
+    });
+    const bytes = Buffer.from(JSON.stringify(result));
+    return {
+      classification: "EvaluationOutcome" as const,
+      result,
+      artifactManifest: { schemaVersion: "1" as const, artifacts: [{ path: "sandcastle-result.json", contentIdentity: `sha256:${createHash("sha256").update(bytes).digest("hex")}`, size: bytes.length }] },
+      runtimeEnvironment: { schemaVersion: "1" as const, adapter: result.runtime.adapter, observedAt: result.runtime.finishedAt }
+    };
+  } finally {
+    await rm(repositoryPath, { recursive: true, force: true });
   }
 }
 

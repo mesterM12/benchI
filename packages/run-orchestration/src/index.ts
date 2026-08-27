@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -49,6 +49,8 @@ export type CandidateResult = {
   runtimeEnvironment: RuntimeEnvironmentRecord;
 };
 export type TrialAttempt = CandidateResult & { id: string; trialId: string; committedAt: string };
+export type CommandReceipt = { id: string; idempotencyKey: string; replayed: boolean };
+export type EvalRunInspection = EvalRunSnapshot & { jobs: WorkerLease[]; attempts: TrialAttempt[] };
 export type WorkerLease = { jobId: string; trialId: string; state: string; generation: number; expiresAt?: string; infrastructureFailures: number };
 export type RunEvent = { sequence: number; sourceId: string; trialId: string; type: string; payload: unknown; occurredAt: string };
 
@@ -147,6 +149,13 @@ export async function migrate(pool: Pool): Promise<void> {
       run_id text NOT NULL REFERENCES benchi_eval_run_snapshots(id),
       PRIMARY KEY (actor_id, idempotency_key)
     );
+    CREATE TABLE IF NOT EXISTS benchi_eval_run_start_receipts (
+      actor_id text NOT NULL,
+      idempotency_key text NOT NULL,
+      run_id text NOT NULL REFERENCES benchi_eval_run_snapshots(id),
+      receipt jsonb NOT NULL,
+      PRIMARY KEY (actor_id, idempotency_key)
+    );
     CREATE TABLE IF NOT EXISTS benchi_phase_jobs (
       id text PRIMARY KEY,
       trial_id text NOT NULL UNIQUE REFERENCES benchi_eval_trials(id),
@@ -241,14 +250,28 @@ export class RunOrchestration {
     }
   }
 
-  async start(id: string, infrastructureRetryLimit = 0): Promise<void> {
+  async start(id: string, commandOrRetryLimit?: { actorId: string; idempotencyKey: string } | number, infrastructureRetryLimit = 0): Promise<CommandReceipt> {
+    const command = typeof commandOrRetryLimit === "number" ? undefined : commandOrRetryLimit;
+    if (typeof commandOrRetryLimit === "number") infrastructureRetryLimit = commandOrRetryLimit;
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      if (command) {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [command.actorId, command.idempotencyKey]);
+        const existing = await client.query<{ run_id: string; receipt: CommandReceipt }>("SELECT run_id, receipt FROM benchi_eval_run_start_receipts WHERE actor_id = $1 AND idempotency_key = $2", [command.actorId, command.idempotencyKey]);
+        if (existing.rows[0]) {
+          if (existing.rows[0].run_id !== id) throw new Error("IDEMPOTENCY_MISMATCH");
+          await client.query("COMMIT");
+          return { ...existing.rows[0].receipt, replayed: true };
+        }
+      }
       const result = await client.query("UPDATE benchi_eval_run_snapshots SET state = 'Started' WHERE id = $1 AND state = 'Ready'", [id]);
       if (result.rowCount !== 1) throw new Error("Eval Run is not Ready");
       await client.query("INSERT INTO benchi_phase_jobs (id, trial_id, state, infrastructure_retry_limit) SELECT 'phase:' || id, id, 'queued', $2 FROM benchi_eval_trials WHERE run_id = $1", [id, infrastructureRetryLimit]);
+      const receipt = { id: randomUUID(), idempotencyKey: command?.idempotencyKey ?? randomUUID(), replayed: false };
+      if (command) await client.query("INSERT INTO benchi_eval_run_start_receipts (actor_id, idempotency_key, run_id, receipt) VALUES ($1, $2, $3, $4)", [command.actorId, command.idempotencyKey, id, receipt]);
       await client.query("COMMIT");
+      return receipt;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -257,13 +280,13 @@ export class RunOrchestration {
     }
   }
 
-  async leaseNext(workerId: string, now: string, expiresAt: string): Promise<WorkerLease | undefined> {
+  async leaseNext(workerId: string, now: string, expiresAt: string, runId?: string): Promise<WorkerLease | undefined> {
     const result = await this.pool.query<{ id: string; trial_id: string; state: string; generation: number; infrastructure_failures: number }>(`
       WITH candidate AS (
         SELECT jobs.id FROM benchi_phase_jobs jobs
         JOIN benchi_eval_trials trials ON trials.id = jobs.trial_id
         JOIN benchi_eval_run_snapshots runs ON runs.id = trials.run_id
-        WHERE jobs.state = 'queued' AND $2::timestamptz < $3::timestamptz
+        WHERE jobs.state = 'queued' AND $2::timestamptz < $3::timestamptz AND ($4::text IS NULL OR runs.id = $4)
         ORDER BY runs.last_admission, trials.position
         FOR UPDATE OF jobs SKIP LOCKED LIMIT 1
       ), leased AS (
@@ -276,7 +299,7 @@ export class RunOrchestration {
         WHERE trials.id = leased.trial_id AND runs.id = trials.run_id
       )
       SELECT * FROM leased
-    `, [workerId, now, expiresAt]);
+    `, [workerId, now, expiresAt, runId ?? null]);
     const job = result.rows[0];
     return job && { jobId: job.id, trialId: job.trial_id, state: job.state, generation: job.generation, expiresAt, infrastructureFailures: job.infrastructure_failures };
   }
@@ -404,6 +427,14 @@ export class RunOrchestration {
     if (!run.rows[0]) return undefined;
     const trials = await this.pool.query<{ trial: Trial }>("SELECT trial FROM benchi_eval_trials WHERE run_id = $1 ORDER BY position", [id]);
     return { ...run.rows[0].snapshot, state: run.rows[0].state, trials: trials.rows.map(({ trial }) => trial) };
+  }
+
+  async inspect(id: string): Promise<EvalRunInspection | undefined> {
+    const run = await this.get(id);
+    if (!run) return undefined;
+    const result = await this.resumeEvents(id, 0);
+    const attempts = (await Promise.all(run.trials.map(({ id: trialId }) => this.listAttempts(trialId)))).flat();
+    return { ...run, jobs: result.jobs, attempts };
   }
 }
 

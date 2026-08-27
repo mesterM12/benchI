@@ -31,6 +31,7 @@ describe("benchi", () => {
 
   it.each([
     [["run", "freeze", "checkout", "--revision", "7"], "/api/v1/eval-runs", { suiteId: "checkout", revision: 7 }],
+    [["run", "start", "run-1"], "/api/v1/eval-runs/run-1/start", {}],
     [["run", "inspect", "run-1"], "/api/v1/eval-runs/run-1", undefined]
   ])("exposes separate freeze and inspect API commands", async (args, path, body) => {
     const requests: Array<{ url: string; method: string | undefined; body: unknown }> = [];

@@ -244,11 +244,13 @@ protocol("Eval Trial worker protocol", () => {
     const event = { sourceId: "worker-a:7", trialId, type: "output", payload: { text: "hello" }, occurredAt: "2026-08-27T12:01:00.000Z" } as const;
     const first = await runs.recordEvent(event);
     const duplicate = await runs.recordEvent(event);
+    const reordered = await runs.recordEvent({ ...event, sourceId: "worker-a:6", occurredAt: "2026-08-27T12:00:59.000Z" });
     await runs.cancelTrial(trialId, "2026-08-27T12:02:00.000Z");
 
     expect(duplicate.sequence).toBe(first.sequence);
-    const resumed = await runs.resumeEvents((await pool.query("SELECT run_id FROM benchi_eval_trials WHERE id = $1", [trialId])).rows[0].run_id, 0);
-    expect(resumed.events).toEqual([first]);
+    const restarted = new RunOrchestration(pool, content);
+    const resumed = await restarted.resumeEvents((await pool.query("SELECT run_id FROM benchi_eval_trials WHERE id = $1", [trialId])).rows[0].run_id, 0);
+    expect(resumed.events).toEqual([first, reordered]);
     expect(resumed.jobs).toEqual([expect.objectContaining({ trialId, state: "cancelled" })]);
   });
 });

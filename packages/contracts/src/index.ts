@@ -13,22 +13,30 @@ export type PreviewResult =
   | { ok: true; canonicalJson: string; contentIdentity: string; trials: Trial[] }
   | { ok: false; diagnostics: Diagnostic[] };
 
-type Item = { id: string };
+type Item = { id: string; [key: string]: unknown };
 type Selector = { agent?: string; submissionSlot?: string; task: string; scenarioVariant: string; repetitionIndex: number };
 type Suite = {
   kind: "EvalSuite";
   schemaVersion: "1";
   id: string;
+  sources?: Array<{ id: string; git: { remote: string; ref: string } }>;
   agents: Item[];
   submissionSlots?: Item[];
-  tasks: Item[];
+  tasks: Array<Item & { source?: string; prompt?: string; acceptance?: { command?: string } }>;
+  execution?: { timeoutSeconds: number };
   scenarioVariants?: Item[];
   matrix: { repetitions: number; include?: Selector[]; exclude?: Selector[] };
 };
 
 const fields = {
-  root: new Set(["kind", "schemaVersion", "id", "agents", "submissionSlots", "tasks", "scenarioVariants", "matrix"]),
+  root: new Set(["kind", "schemaVersion", "id", "sources", "agents", "submissionSlots", "tasks", "scenarioVariants", "execution", "matrix"]),
   item: new Set(["id"]),
+  source: new Set(["id", "git"]),
+  git: new Set(["remote", "ref"]),
+  agent: new Set(["id", "adapter", "model", "options"]),
+  task: new Set(["id", "source", "prompt", "acceptance"]),
+  acceptance: new Set(["command"]),
+  execution: new Set(["timeoutSeconds"]),
   matrix: new Set(["repetitions", "include", "exclude"]),
   selector: new Set(["agent", "submissionSlot", "task", "scenarioVariant", "repetitionIndex"])
 };
@@ -44,9 +52,16 @@ export function previewEvalSuite(source: string): PreviewResult {
 
   const diagnostics: Diagnostic[] = [];
   unknownFields(value, fields.root, "", diagnostics);
-  for (const [name, allowed] of [["agents", fields.item], ["submissionSlots", fields.item], ["tasks", fields.item], ["scenarioVariants", fields.item]] as const) {
+  for (const [name, allowed] of [["agents", fields.agent], ["submissionSlots", fields.item], ["tasks", fields.task], ["scenarioVariants", fields.item], ["sources", fields.source]] as const) {
     if (Array.isArray(value[name])) value[name].forEach((item, index) => unknownFields(item, allowed, `/${name}/${index}`, diagnostics));
   }
+  if (Array.isArray(value.sources)) value.sources.forEach((source, index) => {
+    if (record(source)) unknownFields(source.git, fields.git, `/sources/${index}/git`, diagnostics);
+  });
+  if (Array.isArray(value.tasks)) value.tasks.forEach((task, index) => {
+    if (record(task)) unknownFields(task.acceptance, fields.acceptance, `/tasks/${index}/acceptance`, diagnostics);
+  });
+  unknownFields(value.execution, fields.execution, "/execution", diagnostics);
   if (record(value.matrix)) {
     unknownFields(value.matrix, fields.matrix, "/matrix", diagnostics);
     for (const name of ["include", "exclude"] as const) {
@@ -66,6 +81,25 @@ export function previewEvalSuite(source: string): PreviewResult {
   if (value.matrix.exclude !== undefined && !Array.isArray(value.matrix.exclude)) return invalid("/matrix/exclude", "INVALID_EXCLUSIONS");
 
   const suite = value as Suite;
+  if (suite.sources !== undefined) {
+    if (!items(suite.sources)) return invalid("/sources", "INVALID_SOURCES");
+    for (const [index, source] of suite.sources.entries()) {
+      if (!record(source.git)) return invalid(`/sources/${index}/git`, "INVALID_GIT_SOURCE");
+      if (typeof source.git.remote !== "string" || !source.git.remote) return invalid(`/sources/${index}/git/remote`, "INVALID_GIT_REMOTE");
+      if (typeof source.git.ref !== "string" || !source.git.ref) return invalid(`/sources/${index}/git/ref`, "INVALID_GIT_REF");
+    }
+    for (const [index, agent] of suite.agents.entries()) {
+      if (agent.adapter !== "opencode") return invalid(`/agents/${index}/adapter`, "INVALID_ADAPTER");
+      if (typeof agent.model !== "string" || !agent.model) return invalid(`/agents/${index}/model`, "INVALID_MODEL");
+      if (agent.options !== undefined && !record(agent.options)) return invalid(`/agents/${index}/options`, "INVALID_OPTIONS");
+    }
+    for (const [index, task] of suite.tasks.entries()) {
+      if (typeof task.source !== "string" || !suite.sources.some(({ id }) => id === task.source)) return invalid(`/tasks/${index}/source`, "UNKNOWN_SOURCE");
+      if (typeof task.prompt !== "string" || !task.prompt) return invalid(`/tasks/${index}/prompt`, "INVALID_PROMPT");
+      if (!record(task.acceptance) || typeof task.acceptance.command !== "string" || !task.acceptance.command) return invalid(`/tasks/${index}/acceptance/command`, "INVALID_ACCEPTANCE_COMMAND");
+    }
+    if (!record(suite.execution) || !Number.isInteger(suite.execution.timeoutSeconds) || suite.execution.timeoutSeconds < 1) return invalid("/execution/timeoutSeconds", "INVALID_TIMEOUT_SECONDS");
+  }
   const variants = suite.scenarioVariants ?? [{ id: "baseline" }];
   const selectors = [...(suite.matrix.exclude ?? []).map((selector, index) => ["exclude", index, selector] as const), ...(suite.matrix.include ?? []).map((selector, index) => ["include", index, selector] as const)];
   for (const [group, index, selector] of selectors) {

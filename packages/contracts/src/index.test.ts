@@ -28,6 +28,30 @@ matrix:
 `;
 
 describe("previewEvalSuite", () => {
+  it("accepts a strict Git-backed OpenCode Eval Suite", () => {
+    const result = previewEvalSuite(`kind: EvalSuite
+schemaVersion: "1"
+id: checkout
+sources:
+  - id: app
+    git: {remote: https://example.test/app.git, ref: main}
+agents:
+  - id: opencode
+    adapter: opencode
+    model: openai/gpt-5
+    options: {reasoningEffort: high}
+tasks:
+  - id: cart
+    source: app
+    prompt: Fix checkout.
+    acceptance: {command: pnpm test}
+execution: {timeoutSeconds: 900}
+matrix: {repetitions: 1}
+`);
+
+    expect(result).toMatchObject({ ok: true, trials: [{ id: "opencode__cart__baseline__1" }] });
+  });
+
   it("produces canonical identity and deterministic Trial Matrix", () => {
     const result = previewEvalSuite(validSuite);
 
@@ -82,5 +106,19 @@ matrix:
   ])("reports stable diagnostics for %s", (_, yaml, diagnostics) => {
     const result = previewEvalSuite(yaml);
     expect(result).toMatchObject({ ok: false, diagnostics });
+  });
+
+  it.each([
+    ["unknown Git field", "/sources/0/git/tag", "UNKNOWN_FIELD", "sources: [{id: app, git: {remote: x, ref: main, tag: nope}}]"],
+    ["missing Git ref", "/sources/0/git/ref", "INVALID_GIT_REF", "sources: [{id: app, git: {remote: x}}]"],
+    ["unknown task source", "/tasks/0/source", "UNKNOWN_SOURCE", "tasks: [{id: task, source: missing, prompt: 'Fix.', acceptance: {command: test}}]"],
+    ["missing acceptance command", "/tasks/0/acceptance/command", "INVALID_ACCEPTANCE_COMMAND", "tasks: [{id: task, source: app, prompt: 'Fix.', acceptance: {}}]"],
+    ["missing OpenCode model", "/agents/0/model", "INVALID_MODEL", "agents: [{id: agent, adapter: opencode}]"],
+    ["invalid timeout", "/execution/timeoutSeconds", "INVALID_TIMEOUT_SECONDS", "execution: {timeoutSeconds: 0}"],
+  ])("reports stable diagnostics for %s", (_, path, code, replacement) => {
+    const source = `kind: EvalSuite\nschemaVersion: "1"\nid: strict\nagents: [{id: agent, adapter: opencode, model: openai/gpt-5}]\nsources: [{id: app, git: {remote: x, ref: main}}]\ntasks: [{id: task, source: app, prompt: Fix., acceptance: {command: test}}]\nexecution: {timeoutSeconds: 60}\nmatrix: {repetitions: 1}\n`;
+    const keys = replacement.startsWith("agents:") ? ["agents"] : replacement.startsWith("tasks:") ? ["tasks"] : replacement.startsWith("execution:") ? ["execution"] : ["sources"];
+    const changed = source.split("\n").filter((line) => !keys.some((key) => line.startsWith(`${key}:`))).join("\n") + `\n${replacement}\n`;
+    expect(previewEvalSuite(changed)).toEqual({ ok: false, diagnostics: [{ path, code }] });
   });
 });

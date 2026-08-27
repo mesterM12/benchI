@@ -30,7 +30,7 @@ describe("benchi", () => {
   });
 
   it.each([
-    [["run", "freeze", "suite-revision-7"], "/api/v1/eval-runs", { suiteRevisionId: "suite-revision-7" }],
+    [["run", "freeze", "checkout", "--revision", "7"], "/api/v1/eval-runs", { suiteId: "checkout", revision: 7 }],
     [["run", "inspect", "run-1"], "/api/v1/eval-runs/run-1", undefined],
     [["run", "start", "run-1"], "/api/v1/eval-runs/run-1:start", {}]
   ])("exposes separate freeze, inspect, and start API commands", async (args, path, body) => {

@@ -18,11 +18,19 @@ export async function runCli(args: string[], write = console.log, request: Reque
   }
   if (args[0] === "run" && (args[1] === "freeze" || args[1] === "inspect" || args[1] === "start") && args[2]) {
     const [, command, id] = args;
+    const revision = option(args, "--revision");
+    if (command === "freeze" && (!revision || !Number.isInteger(Number(revision)) || Number(revision) < 1)) {
+      write("usage: benchi run freeze <suite-id> --revision <n>");
+      return 2;
+    }
     const path = command === "freeze" ? "/api/v1/eval-runs" : `/api/v1/eval-runs/${encodeURIComponent(id)}${command === "start" ? ":start" : ""}`;
-    const body = command === "freeze" ? { suiteRevisionId: id } : command === "start" ? {} : undefined;
+    const body = command === "freeze" ? { suiteId: id, revision: Number(revision) } : command === "start" ? {} : undefined;
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (process.env.BENCHI_SESSION) headers.Cookie = process.env.BENCHI_SESSION;
     const response = await request(`${process.env.BENCHI_URL ?? "http://localhost:3000"}${path}`, {
       method: body === undefined ? "GET" : "POST",
-      ...(body === undefined ? {} : { headers: { "content-type": "application/json", "idempotency-key": randomUUID() }, body: JSON.stringify(body) })
+      headers,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) })
     });
     write(await response.text());
     return response.ok ? 0 : 1;
@@ -30,7 +38,7 @@ export async function runCli(args: string[], write = console.log, request: Reque
   const [command, file] = args;
   if (command === "suite") return runSuite(args.slice(1), write);
   if (command !== "preview" || !file) {
-    write("usage: benchi preview <suite.yaml> [--json] | benchi suite <validate|create|revise|list|get> | benchi run <freeze|inspect|start> <id> | benchi trial submit <bundle.json>");
+    write("usage: benchi preview <suite.yaml> [--json] | benchi suite <validate|create|revise|list|get> | benchi run freeze <suite-id> --revision <n> | inspect <run-id> | benchi trial submit <bundle.json>");
     return 2;
   }
   const result = previewEvalSuite(await readFile(file, "utf8"));

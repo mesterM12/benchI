@@ -1,5 +1,6 @@
 import { migrate as migrateSubmittedTrials } from "@benchi/submitted-trials";
 import { definitions, pool } from "../lib/server";
+import { migrate as migrateRuns } from "@benchi/run-orchestration";
 
 await pool.query(`
   CREATE TABLE IF NOT EXISTS "user" (
@@ -30,5 +31,6 @@ await pool.query(`
   CREATE INDEX IF NOT EXISTS verification_identifier_idx ON verification (identifier);
 `);
 await definitions.migrate();
+await migrateRuns(pool);
 await migrateSubmittedTrials(pool);
 await pool.end();

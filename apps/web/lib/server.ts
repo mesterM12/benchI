@@ -3,9 +3,16 @@ import { betterAuth } from "better-auth";
 import { admin } from "better-auth/plugins";
 import { EvaluationDefinition } from "@benchi/evaluation-definition";
 import { SubmittedTrials } from "@benchi/submitted-trials";
+import { RunOrchestration, createS3RetainedContent } from "@benchi/run-orchestration";
 
 export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 export const definitions = new EvaluationDefinition(pool);
+const objectStorageEndpoint = process.env.OBJECT_STORAGE_ENDPOINT;
+const objectStorageAccessKey = process.env.OBJECT_STORAGE_ACCESS_KEY;
+const objectStorageSecretKey = process.env.OBJECT_STORAGE_SECRET_KEY;
+export const runs = new RunOrchestration(pool, objectStorageEndpoint && objectStorageAccessKey && objectStorageSecretKey
+  ? createS3RetainedContent({ endpoint: objectStorageEndpoint, accessKeyId: objectStorageAccessKey, secretAccessKey: objectStorageSecretKey })
+  : { async putVerified() { throw new Error("object storage configuration is required"); } });
 export const submittedTrials = new SubmittedTrials(pool, {
   async verify(contentIdentity) {
     const endpoint = process.env.RETAINED_CONTENT_VERIFIER_URL;

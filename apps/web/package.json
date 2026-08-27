@@ -12,7 +12,9 @@
     "check": "tsc --noEmit"
   },
   "dependencies": {
+    "@benchi/contracts": "workspace:*",
     "@benchi/evaluation-definition": "workspace:*",
+    "@benchi/run-orchestration": "workspace:*",
     "@benchi/submitted-trials": "workspace:*",
     "better-auth": "1.7.2",
     "next": "16.3.3",

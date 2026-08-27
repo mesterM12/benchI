@@ -1,13 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { DeterministicFakeAgent, InMemoryRetainedContent, RunOrchestration, migrate } from "./index.js";
+import { DeterministicFakeAgent, InMemoryRetainedContent, RunOrchestration, createS3RetainedContent, migrate } from "./index.js";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const protocol = describe.runIf(databaseUrl);
+const exec = promisify(execFile);
 
 protocol("Freeze Eval Run Protocol Transaction", () => {
   const pool = new Pool({ connectionString: databaseUrl });
@@ -70,6 +73,29 @@ protocol("Freeze Eval Run Protocol Transaction", () => {
 
     expect(await runs.get("run-failed")).toBeUndefined();
     expect((await pool.query("SELECT count(*)::int AS count FROM benchi_eval_trials WHERE run_id = $1", ["run-failed"])).rows[0].count).toBe(0);
+  });
+
+  it("resolves a Git ref once and retains its immutable archive with provenance", async () => {
+    const remote = await mkdtemp(join(tmpdir(), "benchi-git-"));
+    await exec("git", ["init", "--initial-branch=main", remote]);
+    await exec("git", ["-C", remote, "config", "user.email", "test@example.test"]);
+    await exec("git", ["-C", remote, "config", "user.name", "Test"]);
+    await writeFile(join(remote, "README.md"), "first\n");
+    await exec("git", ["-C", remote, "add", "."]);
+    await exec("git", ["-C", remote, "commit", "-m", "first"]);
+    const commit = (await exec("git", ["-C", remote, "rev-parse", "HEAD"])).stdout.trim();
+    const content = new InMemoryRetainedContent();
+    const runs = new RunOrchestration(pool, content);
+
+    const snapshot = await runs.freeze({
+      id: `git-run-${randomUUID()}`, suiteRevisionId: "suite-1", suiteRoot: root,
+      suite: {}, resolvedDefinitions: {}, effectivePolicies: {}, trials: [], localSources: [],
+      gitSources: [{ id: "app", remote, ref: "main" }],
+      frozenAt: "2026-08-27T12:00:00.000Z", benchiVersion: "0.0.0"
+    });
+
+    expect(snapshot.sources).toEqual([expect.objectContaining({ id: "app", kind: "git", remote, requestedRef: "main", commit })]);
+    expect(await content.get(snapshot.sources[0]!.contentIdentity)).toBeInstanceOf(Buffer);
   });
 
   it("rolls back snapshot and trials when publishing fails", async () => {
@@ -263,5 +289,38 @@ describe("retained-content provider conformance", () => {
     await store.putVerified(identity, bytes);
     expect(await store.get(identity)).toEqual(bytes);
     await expect(store.putVerified(identity, Buffer.from("changed"))).rejects.toThrow("digest mismatch");
+  });
+});
+
+describe.runIf(databaseUrl && process.env.TEST_OBJECT_STORAGE_ENDPOINT)("Git-backed Eval Run system seam", () => {
+  const pool = new Pool({ connectionString: databaseUrl });
+  const content = createS3RetainedContent({
+    endpoint: process.env.TEST_OBJECT_STORAGE_ENDPOINT!,
+    accessKeyId: process.env.TEST_OBJECT_STORAGE_ACCESS_KEY!,
+    secretAccessKey: process.env.TEST_OBJECT_STORAGE_SECRET_KEY!,
+    bucket: `benchi-system-${randomUUID()}`
+  });
+
+  beforeAll(() => migrate(pool));
+  afterAll(() => pool.end());
+
+  it("freezes local Git provenance through PostgreSQL and object storage", async () => {
+    const remote = await mkdtemp(join(tmpdir(), "benchi-system-git-"));
+    await exec("git", ["init", "--initial-branch=main", remote]);
+    await exec("git", ["-C", remote, "config", "user.email", "test@example.test"]);
+    await exec("git", ["-C", remote, "config", "user.name", "Test"]);
+    await writeFile(join(remote, "README.md"), "system source\n");
+    await exec("git", ["-C", remote, "add", "."]);
+    await exec("git", ["-C", remote, "commit", "-m", "source"]);
+    const id = `system-run-${randomUUID()}`;
+    const runs = new RunOrchestration(pool, content);
+
+    const frozen = await runs.freeze({
+      id, suiteRevisionId: "system@1", suiteRoot: remote, suite: {}, resolvedDefinitions: {}, effectivePolicies: {}, trials: [], localSources: [],
+      gitSources: [{ id: "app", remote, ref: "main" }], frozenAt: new Date().toISOString(), benchiVersion: "0.0.0"
+    });
+
+    expect((await runs.get(id))?.sources).toEqual(frozen.sources);
+    expect(await content.get(frozen.sources[0]!.contentIdentity)).toBeInstanceOf(Buffer);
   });
 });

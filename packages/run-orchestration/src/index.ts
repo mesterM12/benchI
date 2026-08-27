@@ -1,17 +1,20 @@
 import { createHash } from "node:crypto";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 import type { Pool } from "pg";
 import type { Trial } from "@benchi/contracts";
+import { CreateBucketCommand, GetObjectCommand, HeadBucketCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
 export type LocalSource = { id: string; path: string };
+export type GitSource = { id: string; remote: string; ref: string };
 export type SourceProvenance = {
   id: string;
-  kind: "suite-relative";
-  requestedPath: string;
   contentIdentity: string;
   size: number;
-};
+} & ({ kind: "suite-relative"; requestedPath: string } | { kind: "git"; remote: string; requestedRef: string; commit: string });
 export type FreezeEvalRun = {
   id: string;
   suiteRevisionId: string;
@@ -21,6 +24,7 @@ export type FreezeEvalRun = {
   trials: Trial[];
   effectivePolicies: unknown;
   localSources: LocalSource[];
+  gitSources?: GitSource[];
   frozenAt: string;
   benchiVersion: string;
 };
@@ -81,6 +85,45 @@ export class InMemoryRetainedContent implements RetainedContent {
     const bytes = this.objects.get(contentIdentity);
     return bytes && Buffer.from(bytes);
   }
+}
+
+export class S3RetainedContent implements RetainedContent {
+  private ready?: Promise<void>;
+
+  constructor(private readonly client: S3Client, private readonly bucket = "benchi-retained-content") {}
+
+  async putVerified(contentIdentity: string, bytes: Buffer): Promise<void> {
+    if (identity(bytes) !== contentIdentity) throw new Error("digest mismatch");
+    await (this.ready ??= this.ensureBucket());
+    await this.client.send(new PutObjectCommand({ Bucket: this.bucket, Key: contentIdentity, Body: bytes }));
+  }
+
+  async get(contentIdentity: string): Promise<Buffer | undefined> {
+    try {
+      const result = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: contentIdentity }));
+      return result.Body && Buffer.from(await result.Body.transformToByteArray());
+    } catch (error) {
+      if ((error as { name?: string }).name === "NoSuchKey") return undefined;
+      throw error;
+    }
+  }
+
+  private async ensureBucket(): Promise<void> {
+    try {
+      await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }));
+    } catch {
+      await this.client.send(new CreateBucketCommand({ Bucket: this.bucket }));
+    }
+  }
+}
+
+export function createS3RetainedContent(config: { endpoint: string; accessKeyId: string; secretAccessKey: string; bucket?: string }): S3RetainedContent {
+  return new S3RetainedContent(new S3Client({
+    endpoint: config.endpoint,
+    region: "us-east-1",
+    forcePathStyle: true,
+    credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey }
+  }), config.bucket);
 }
 
 export async function migrate(pool: Pool): Promise<void> {
@@ -145,11 +188,17 @@ export class RunOrchestration {
   constructor(private readonly pool: Pool, private readonly retainedContent: RetainedContent) {}
 
   async freeze(command: FreezeEvalRun): Promise<EvalRunSnapshot> {
-    const sources = await Promise.all(command.localSources.map(async (source) => {
+    const localSources = await Promise.all(command.localSources.map(async (source) => {
       const bytes = await readSuiteFile(command.suiteRoot, source.path);
       const contentIdentity = identity(bytes);
       await this.retainedContent.putVerified(contentIdentity, bytes);
       return { id: source.id, kind: "suite-relative" as const, requestedPath: source.path, contentIdentity, size: bytes.length };
+    }));
+    const gitSources = await Promise.all((command.gitSources ?? []).map(async (source) => {
+      const { bytes, commit } = await materializeGitSource(source);
+      const contentIdentity = identity(bytes);
+      await this.retainedContent.putVerified(contentIdentity, bytes);
+      return { id: source.id, kind: "git" as const, remote: source.remote, requestedRef: source.ref, commit, contentIdentity, size: bytes.length };
     }));
     const snapshot: EvalRunSnapshot = {
       id: command.id,
@@ -158,7 +207,7 @@ export class RunOrchestration {
       resolvedDefinitions: command.resolvedDefinitions,
       trials: command.trials,
       effectivePolicies: command.effectivePolicies,
-      sources,
+      sources: [...localSources, ...gitSources],
       frozenAt: command.frozenAt,
       benchiVersion: command.benchiVersion,
       state: "Ready"
@@ -359,4 +408,19 @@ async function readSuiteFile(root: string, path: string): Promise<Buffer> {
 
 function identity(bytes: Buffer): string {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+const exec = promisify(execFile);
+
+async function materializeGitSource(source: GitSource): Promise<{ bytes: Buffer; commit: string }> {
+  const directory = await mkdtemp(resolve(tmpdir(), "benchi-git-"));
+  try {
+    await exec("git", ["clone", "--no-checkout", "--filter=blob:none", "--", source.remote, directory]);
+    await exec("git", ["-C", directory, "fetch", "--depth=1", "origin", source.ref]);
+    const commit = (await exec("git", ["-C", directory, "rev-parse", "--verify", "FETCH_HEAD^{commit}"])).stdout.trim();
+    const { stdout } = await exec("git", ["-C", directory, "archive", "--format=tar", commit], { encoding: "buffer", maxBuffer: 1024 * 1024 * 1024 });
+    return { bytes: stdout, commit };
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }

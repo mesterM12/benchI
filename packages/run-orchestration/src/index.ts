@@ -34,7 +34,7 @@ export type EvalRunSnapshot = {
   sources: SourceProvenance[];
   frozenAt: string;
   benchiVersion: string;
-  state: "Ready" | "Started";
+  state: "Ready" | "Started" | "Cancelled";
 };
 export type AttemptArtifactManifest = { schemaVersion: "1"; artifacts: Array<{ path: string; contentIdentity: string; size: number }> };
 export type RuntimeEnvironmentRecord = { schemaVersion: "1"; adapter: string; observedAt: string };
@@ -45,7 +45,8 @@ export type CandidateResult = {
   runtimeEnvironment: RuntimeEnvironmentRecord;
 };
 export type TrialAttempt = CandidateResult & { id: string; trialId: string; committedAt: string };
-export type WorkerLease = { jobId: string; trialId: string; state: string; generation: number; expiresAt: string };
+export type WorkerLease = { jobId: string; trialId: string; state: string; generation: number; expiresAt?: string; infrastructureFailures: number };
+export type RunEvent = { sequence: number; sourceId: string; trialId: string; type: string; payload: unknown; occurredAt: string };
 
 export class DeterministicFakeAgent {
   async execute(invocation: { trialId: string; prompt: string }): Promise<CandidateResult> {
@@ -86,7 +87,8 @@ export async function migrate(pool: Pool): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS benchi_eval_run_snapshots (
       id text PRIMARY KEY,
-      state text NOT NULL CHECK (state IN ('Ready', 'Started')),
+      state text NOT NULL CHECK (state IN ('Ready', 'Started', 'Cancelled')),
+      last_admission bigint NOT NULL DEFAULT 0,
       snapshot jsonb NOT NULL
     );
     CREATE TABLE IF NOT EXISTS benchi_eval_trials (
@@ -98,8 +100,10 @@ export async function migrate(pool: Pool): Promise<void> {
     CREATE TABLE IF NOT EXISTS benchi_phase_jobs (
       id text PRIMARY KEY,
       trial_id text NOT NULL UNIQUE REFERENCES benchi_eval_trials(id),
-      state text NOT NULL CHECK (state IN ('queued', 'leased', 'starting', 'running', 'committing', 'completed', 'failed')),
+      state text NOT NULL CHECK (state IN ('queued', 'leased', 'starting', 'running', 'committing', 'completed', 'failed', 'cancelled')),
       generation integer NOT NULL DEFAULT 0,
+      infrastructure_failures integer NOT NULL DEFAULT 0,
+      infrastructure_retry_limit integer NOT NULL DEFAULT 0,
       worker_id text,
       lease_expires_at timestamptz,
       candidate jsonb
@@ -110,6 +114,24 @@ export async function migrate(pool: Pool): Promise<void> {
       trial_id text NOT NULL REFERENCES benchi_eval_trials(id),
       attempt jsonb NOT NULL
     );
+    CREATE SEQUENCE IF NOT EXISTS benchi_admission_sequence;
+    CREATE TABLE IF NOT EXISTS benchi_run_events (
+      sequence bigserial PRIMARY KEY,
+      run_id text NOT NULL REFERENCES benchi_eval_run_snapshots(id),
+      trial_id text NOT NULL REFERENCES benchi_eval_trials(id),
+      source_id text NOT NULL,
+      type text NOT NULL,
+      payload jsonb NOT NULL,
+      occurred_at timestamptz NOT NULL,
+      UNIQUE (trial_id, source_id)
+    );
+    ALTER TABLE benchi_eval_run_snapshots ADD COLUMN IF NOT EXISTS last_admission bigint NOT NULL DEFAULT 0;
+    ALTER TABLE benchi_eval_run_snapshots DROP CONSTRAINT IF EXISTS benchi_eval_run_snapshots_state_check;
+    ALTER TABLE benchi_eval_run_snapshots ADD CONSTRAINT benchi_eval_run_snapshots_state_check CHECK (state IN ('Ready', 'Started', 'Cancelled'));
+    ALTER TABLE benchi_phase_jobs ADD COLUMN IF NOT EXISTS infrastructure_failures integer NOT NULL DEFAULT 0;
+    ALTER TABLE benchi_phase_jobs ADD COLUMN IF NOT EXISTS infrastructure_retry_limit integer NOT NULL DEFAULT 0;
+    ALTER TABLE benchi_phase_jobs DROP CONSTRAINT IF EXISTS benchi_phase_jobs_state_check;
+    ALTER TABLE benchi_phase_jobs ADD CONSTRAINT benchi_phase_jobs_state_check CHECK (state IN ('queued', 'leased', 'starting', 'running', 'committing', 'completed', 'failed', 'cancelled'));
     CREATE OR REPLACE FUNCTION reject_trial_attempt_change() RETURNS trigger AS $$
       BEGIN RAISE EXCEPTION 'Trial Attempts are immutable'; END;
     $$ LANGUAGE plpgsql;
@@ -159,13 +181,13 @@ export class RunOrchestration {
     }
   }
 
-  async start(id: string): Promise<void> {
+  async start(id: string, infrastructureRetryLimit = 0): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
       const result = await client.query("UPDATE benchi_eval_run_snapshots SET state = 'Started' WHERE id = $1 AND state = 'Ready'", [id]);
       if (result.rowCount !== 1) throw new Error("Eval Run is not Ready");
-      await client.query("INSERT INTO benchi_phase_jobs (id, trial_id, state) SELECT 'phase:' || id, id, 'queued' FROM benchi_eval_trials WHERE run_id = $1", [id]);
+      await client.query("INSERT INTO benchi_phase_jobs (id, trial_id, state, infrastructure_retry_limit) SELECT 'phase:' || id, id, 'queued', $2 FROM benchi_eval_trials WHERE run_id = $1", [id, infrastructureRetryLimit]);
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
@@ -176,13 +198,27 @@ export class RunOrchestration {
   }
 
   async leaseNext(workerId: string, now: string, expiresAt: string): Promise<WorkerLease | undefined> {
-    const result = await this.pool.query<{ id: string; trial_id: string; state: string; generation: number }>(`
-      UPDATE benchi_phase_jobs SET state = 'leased', worker_id = $1, generation = generation + 1, lease_expires_at = $3
-      WHERE id = (SELECT id FROM benchi_phase_jobs WHERE state = 'queued' AND $2::timestamptz < $3::timestamptz ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1)
-      RETURNING id, trial_id, state, generation
+    const result = await this.pool.query<{ id: string; trial_id: string; state: string; generation: number; infrastructure_failures: number }>(`
+      WITH candidate AS (
+        SELECT jobs.id FROM benchi_phase_jobs jobs
+        JOIN benchi_eval_trials trials ON trials.id = jobs.trial_id
+        JOIN benchi_eval_run_snapshots runs ON runs.id = trials.run_id
+        WHERE jobs.state = 'queued' AND $2::timestamptz < $3::timestamptz
+        ORDER BY runs.last_admission, trials.position
+        FOR UPDATE OF jobs SKIP LOCKED LIMIT 1
+      ), leased AS (
+        UPDATE benchi_phase_jobs jobs SET state = 'leased', worker_id = $1, generation = generation + 1, lease_expires_at = $3
+        FROM candidate WHERE jobs.id = candidate.id
+        RETURNING jobs.id, jobs.trial_id, jobs.state, jobs.generation, jobs.infrastructure_failures
+      ), admission AS (
+        UPDATE benchi_eval_run_snapshots runs SET last_admission = nextval('benchi_admission_sequence')
+        FROM benchi_eval_trials trials, leased
+        WHERE trials.id = leased.trial_id AND runs.id = trials.run_id
+      )
+      SELECT * FROM leased
     `, [workerId, now, expiresAt]);
     const job = result.rows[0];
-    return job && { jobId: job.id, trialId: job.trial_id, state: job.state, generation: job.generation, expiresAt };
+    return job && { jobId: job.id, trialId: job.trial_id, state: job.state, generation: job.generation, expiresAt, infrastructureFailures: job.infrastructure_failures };
   }
 
   async renewLease(jobId: string, workerId: string, generation: number, now: string, expiresAt: string): Promise<{ expiresAt: string }> {
@@ -194,6 +230,40 @@ export class RunOrchestration {
   async recoverExpiredLeases(now: string): Promise<number> {
     const result = await this.pool.query("UPDATE benchi_phase_jobs SET state = 'queued', worker_id = NULL, lease_expires_at = NULL, candidate = NULL WHERE state IN ('leased', 'starting', 'running', 'committing') AND lease_expires_at <= $1", [now]);
     return result.rowCount ?? 0;
+  }
+
+  async recordInfrastructureFailure(jobId: string, workerId: string, generation: number, now: string): Promise<"queued" | "failed"> {
+    const result = await this.pool.query<{ state: "queued" | "failed" }>(`
+      UPDATE benchi_phase_jobs
+      SET state = CASE WHEN infrastructure_failures < infrastructure_retry_limit THEN 'queued' ELSE 'failed' END,
+          infrastructure_failures = infrastructure_failures + 1,
+          worker_id = NULL, lease_expires_at = NULL, candidate = NULL
+      WHERE id = $1 AND worker_id = $2 AND generation = $3 AND lease_expires_at > $4
+        AND state IN ('leased', 'starting', 'running', 'committing')
+      RETURNING state
+    `, [jobId, workerId, generation, now]);
+    if (!result.rows[0]) throw new Error("stale worker lease");
+    return result.rows[0].state;
+  }
+
+  async cancelTrial(trialId: string, _now: string): Promise<void> {
+    await this.pool.query("UPDATE benchi_phase_jobs SET state = 'cancelled', worker_id = NULL, lease_expires_at = NULL, candidate = NULL WHERE trial_id = $1 AND state NOT IN ('completed', 'failed', 'cancelled')", [trialId]);
+  }
+
+  async cancelRun(runId: string, _now: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query("UPDATE benchi_eval_run_snapshots SET state = 'Cancelled' WHERE id = $1 AND state IN ('Ready', 'Started')", [runId]);
+      if (result.rowCount !== 1) throw new Error("Eval Run cannot be cancelled");
+      await client.query("UPDATE benchi_phase_jobs jobs SET state = 'cancelled', worker_id = NULL, lease_expires_at = NULL, candidate = NULL FROM benchi_eval_trials trials WHERE jobs.trial_id = trials.id AND trials.run_id = $1 AND jobs.state NOT IN ('completed', 'failed', 'cancelled')", [runId]);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async markStarting(jobId: string, workerId: string, generation: number, now: string): Promise<void> {
@@ -230,9 +300,29 @@ export class RunOrchestration {
   }
 
   async getJobForTrial(trialId: string): Promise<WorkerLease | undefined> {
-    const result = await this.pool.query<{ id: string; trial_id: string; state: string; generation: number; lease_expires_at: Date }>("SELECT id, trial_id, state, generation, lease_expires_at FROM benchi_phase_jobs WHERE trial_id = $1", [trialId]);
+    const result = await this.pool.query<{ id: string; trial_id: string; state: string; generation: number; lease_expires_at?: Date; infrastructure_failures: number }>("SELECT id, trial_id, state, generation, lease_expires_at, infrastructure_failures FROM benchi_phase_jobs WHERE trial_id = $1", [trialId]);
     const job = result.rows[0];
-    return job && { jobId: job.id, trialId: job.trial_id, state: job.state, generation: job.generation, expiresAt: job.lease_expires_at?.toISOString() };
+    return job && { jobId: job.id, trialId: job.trial_id, state: job.state, generation: job.generation, expiresAt: job.lease_expires_at?.toISOString(), infrastructureFailures: job.infrastructure_failures };
+  }
+
+  async recordEvent(event: Omit<RunEvent, "sequence">): Promise<RunEvent> {
+    const result = await this.pool.query<{ sequence: string }>(`
+      INSERT INTO benchi_run_events (run_id, trial_id, source_id, type, payload, occurred_at)
+      SELECT run_id, $1, $2, $3, $4, $5 FROM benchi_eval_trials WHERE id = $1
+      ON CONFLICT (trial_id, source_id) DO UPDATE SET source_id = EXCLUDED.source_id
+      RETURNING sequence::text
+    `, [event.trialId, event.sourceId, event.type, event.payload, event.occurredAt]);
+    if (!result.rows[0]) throw new Error("Eval Trial not found");
+    return { ...event, sequence: Number(result.rows[0].sequence) };
+  }
+
+  async resumeEvents(runId: string, afterSequence: number): Promise<{ events: RunEvent[]; jobs: WorkerLease[] }> {
+    const events = await this.pool.query<{ sequence: string; source_id: string; trial_id: string; type: string; payload: unknown; occurred_at: Date }>("SELECT sequence::text, source_id, trial_id, type, payload, occurred_at FROM benchi_run_events WHERE run_id = $1 AND sequence > $2 ORDER BY sequence", [runId, afterSequence]);
+    const jobs = await this.pool.query<{ id: string; trial_id: string; state: string; generation: number; lease_expires_at?: Date; infrastructure_failures: number }>("SELECT jobs.id, jobs.trial_id, jobs.state, jobs.generation, jobs.lease_expires_at, jobs.infrastructure_failures FROM benchi_phase_jobs jobs JOIN benchi_eval_trials trials ON trials.id = jobs.trial_id WHERE trials.run_id = $1 ORDER BY trials.position", [runId]);
+    return {
+      events: events.rows.map((event) => ({ sequence: Number(event.sequence), sourceId: event.source_id, trialId: event.trial_id, type: event.type, payload: event.payload, occurredAt: event.occurred_at.toISOString() })),
+      jobs: jobs.rows.map((job) => ({ jobId: job.id, trialId: job.trial_id, state: job.state, generation: job.generation, expiresAt: job.lease_expires_at?.toISOString(), infrastructureFailures: job.infrastructure_failures }))
+    };
   }
 
   async listAttempts(trialId: string): Promise<TrialAttempt[]> {
@@ -250,7 +340,7 @@ export class RunOrchestration {
   }
 
   async get(id: string): Promise<EvalRunSnapshot | undefined> {
-    const run = await this.pool.query<{ state: "Ready" | "Started"; snapshot: EvalRunSnapshot }>("SELECT state, snapshot FROM benchi_eval_run_snapshots WHERE id = $1", [id]);
+    const run = await this.pool.query<{ state: "Ready" | "Started" | "Cancelled"; snapshot: EvalRunSnapshot }>("SELECT state, snapshot FROM benchi_eval_run_snapshots WHERE id = $1", [id]);
     if (!run.rows[0]) return undefined;
     const trials = await this.pool.query<{ trial: Trial }>("SELECT trial FROM benchi_eval_trials WHERE run_id = $1 ORDER BY position", [id]);
     return { ...run.rows[0].snapshot, state: run.rows[0].state, trials: trials.rows.map(({ trial }) => trial) };

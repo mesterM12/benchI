@@ -120,8 +120,19 @@ protocol("Eval Trial worker protocol", () => {
       trials: [{ id: trialId, agentId: "fake", taskId: "task", scenarioVariantId: "baseline", repetitionIndex: 1 }],
       localSources: [], frozenAt: "2026-08-27T12:00:00.000Z", benchiVersion: "0.0.0"
     });
-    await runs.start(runId);
+    await runs.start(runId, 1);
     return trialId;
+  }
+
+  async function startRun(trialIds: string[]) {
+    const runId = `worker-run-${randomUUID()}`;
+    await runs.freeze({
+      id: runId, suiteRevisionId: "suite-1", suiteRoot: process.cwd(), suite: {}, resolvedDefinitions: {}, effectivePolicies: {},
+      trials: trialIds.map((id) => ({ id, agentId: "fake", taskId: "task", scenarioVariantId: "baseline", repetitionIndex: 1 })),
+      localSources: [], frozenAt: "2026-08-27T12:00:00.000Z", benchiVersion: "0.0.0"
+    });
+    await runs.start(runId);
+    return runId;
   }
 
   it("survives restart and renews a generation-bound lease", async () => {
@@ -172,6 +183,73 @@ protocol("Eval Trial worker protocol", () => {
     expect(RunOrchestration.classifyFailure({ kind: "agent", reason: "agent exited" })).toBe("EvaluationOutcome");
     expect(RunOrchestration.classifyFailure({ kind: "infrastructure", reason: "worker lost" })).toBe("InfrastructureFailure");
     expect(RunOrchestration.classifyFailure({ kind: "unknown", reason: "unclassified" })).toBe("InfrastructureFailure");
+  });
+
+  it("resolves cancellation and candidate commit races by durable commit order", async () => {
+    const trialId = await startTrial();
+    const lease = (await runs.leaseNext("worker-a", "2026-08-27T12:01:00.000Z", "2026-08-27T12:05:00.000Z"))!;
+    await runs.markStarting(lease.jobId, "worker-a", lease.generation, "2026-08-27T12:01:01.000Z");
+    await runs.markRunning(lease.jobId, "worker-a", lease.generation, "2026-08-27T12:01:02.000Z");
+    await runs.stageCandidate(lease.jobId, "worker-a", lease.generation, await new DeterministicFakeAgent().execute({ trialId, prompt: "done" }), "2026-08-27T12:01:03.000Z");
+
+    await runs.cancelTrial(trialId, "2026-08-27T12:01:04.000Z");
+    await expect(runs.commitCandidate(lease.jobId, "worker-a", lease.generation, "2026-08-27T12:01:04.000Z")).rejects.toThrow("stale worker lease");
+    expect((await runs.getJobForTrial(trialId))?.state).toBe("cancelled");
+
+    const committedTrial = `committed-${randomUUID()}`;
+    await startRun([committedTrial]);
+    const committedLease = (await runs.leaseNext("worker-b", "2026-08-27T12:02:00.000Z", "2026-08-27T12:06:00.000Z"))!;
+    await runs.markStarting(committedLease.jobId, "worker-b", committedLease.generation, "2026-08-27T12:02:01.000Z");
+    await runs.markRunning(committedLease.jobId, "worker-b", committedLease.generation, "2026-08-27T12:02:02.000Z");
+    await runs.stageCandidate(committedLease.jobId, "worker-b", committedLease.generation, await new DeterministicFakeAgent().execute({ trialId: committedTrial, prompt: "done" }), "2026-08-27T12:02:03.000Z");
+    await runs.commitCandidate(committedLease.jobId, "worker-b", committedLease.generation, "2026-08-27T12:02:04.000Z");
+    await runs.cancelTrial(committedTrial, "2026-08-27T12:02:05.000Z");
+    expect((await runs.getJobForTrial(committedTrial))?.state).toBe("completed");
+
+    const cancelledTrial = `run-cancelled-${randomUUID()}`;
+    const cancelledRun = await startRun([cancelledTrial]);
+    await runs.cancelRun(cancelledRun, "2026-08-27T12:03:00.000Z");
+    expect((await runs.get(cancelledRun))?.state).toBe("Cancelled");
+    expect((await runs.getJobForTrial(cancelledTrial))?.state).toBe("cancelled");
+  });
+
+  it("bounds infrastructure retries without charging lease recovery", async () => {
+    const trialId = await startTrial();
+    const first = (await runs.leaseNext("worker-a", "2026-08-27T12:01:00.000Z", "2026-08-27T12:02:00.000Z"))!;
+    await runs.recoverExpiredLeases("2026-08-27T12:03:00.000Z");
+    expect((await runs.getJobForTrial(trialId))?.infrastructureFailures).toBe(0);
+
+    const second = (await runs.leaseNext("worker-b", "2026-08-27T12:03:00.000Z", "2026-08-27T12:04:00.000Z"))!;
+    expect(await runs.recordInfrastructureFailure(second.jobId, "worker-b", second.generation, "2026-08-27T12:03:01.000Z")).toBe("queued");
+    const third = (await runs.leaseNext("worker-c", "2026-08-27T12:03:02.000Z", "2026-08-27T12:04:00.000Z"))!;
+    expect(await runs.recordInfrastructureFailure(third.jobId, "worker-c", third.generation, "2026-08-27T12:03:03.000Z")).toBe("failed");
+    expect((await runs.getJobForTrial(trialId))?.infrastructureFailures).toBe(2);
+    expect(first.generation).toBe(1);
+  });
+
+  it("admits trials fairly across Eval Runs", async () => {
+    const a1 = `a1-${randomUUID()}`;
+    const a2 = `a2-${randomUUID()}`;
+    const b1 = `b1-${randomUUID()}`;
+    await startRun([a1, a2]);
+    await startRun([b1]);
+
+    const first = (await runs.leaseNext("worker-a", "2026-08-27T12:01:00.000Z", "2026-08-27T12:02:00.000Z"))!;
+    const second = (await runs.leaseNext("worker-b", "2026-08-27T12:01:00.000Z", "2026-08-27T12:02:00.000Z"))!;
+    expect(new Set([first.trialId, second.trialId])).toEqual(new Set([a1, b1]));
+  });
+
+  it("deduplicates resumable events and reconciles them with authoritative state", async () => {
+    const trialId = await startTrial();
+    const event = { sourceId: "worker-a:7", trialId, type: "output", payload: { text: "hello" }, occurredAt: "2026-08-27T12:01:00.000Z" } as const;
+    const first = await runs.recordEvent(event);
+    const duplicate = await runs.recordEvent(event);
+    await runs.cancelTrial(trialId, "2026-08-27T12:02:00.000Z");
+
+    expect(duplicate.sequence).toBe(first.sequence);
+    const resumed = await runs.resumeEvents((await pool.query("SELECT run_id FROM benchi_eval_trials WHERE id = $1", [trialId])).rows[0].run_id, 0);
+    expect(resumed.events).toEqual([first]);
+    expect(resumed.jobs).toEqual([expect.objectContaining({ trialId, state: "cancelled" })]);
   });
 });
 

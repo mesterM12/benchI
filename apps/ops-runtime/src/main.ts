@@ -23,7 +23,7 @@ export async function workerIteration(runs: RunOrchestration, options: { workerI
     await runs.markRunning(lease.jobId, options.workerId, lease.generation, new Date().toISOString());
     const completed = await (options.execute ?? executeFrozenOpenCodeTrial)(execution);
     if (heartbeatError) throw heartbeatError;
-    const artifactManifest = await runs.retainEvidence(completed.evidence);
+    const artifactManifest = await runs.retainEvidence(completed.evidence, execution.attemptId);
     if (heartbeatError) throw heartbeatError;
     await runs.stageCandidate(lease.jobId, options.workerId, lease.generation, {
       classification: completed.classification,

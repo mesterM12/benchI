@@ -91,4 +91,18 @@ describe("benchi", () => {
     expect(await runCli(["trial", "submit", file], () => {}, request)).toBe(0);
     expect(requests).toEqual([{ url: "http://localhost:3000/api/v1/submitted-trials", body: JSON.stringify({ id: "submitted-1" }) }]);
   });
+
+  it.each([
+    [["artifact", "inspect", "attempt-1-log"], "/api/v1/artifacts/attempt-1-log"],
+    [["artifact", "download", "attempt-1-log"], "/api/v1/artifacts/attempt-1-log?download=1"]
+  ])("inspects and downloads retained artifacts through authorized API", async (args, path) => {
+    const requests: string[] = [];
+    const request = async (url: string | URL | Request) => {
+      requests.push(String(url));
+      return new Response("evidence", { status: 200 });
+    };
+
+    expect(await runCli(args, () => {}, request)).toBe(0);
+    expect(requests).toEqual([`http://localhost:3000${path}`]);
+  });
 });

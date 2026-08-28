@@ -28,6 +28,14 @@ export async function runCli(args: string[], write = console.log, request: Reque
     write(await response.text());
     return response.ok ? 0 : 1;
   }
+  if (args[0] === "artifact" && (args[1] === "inspect" || args[1] === "download") && args[2]) {
+    const headers: Record<string, string> = {};
+    if (session) headers.Cookie = session;
+    const download = args[1] === "download";
+    const response = await request(`${server}/api/v1/artifacts/${encodeURIComponent(args[2])}${download ? "?download=1" : ""}`, { headers });
+    write(await response.text());
+    return response.ok ? 0 : 1;
+  }
   if (args[0] === "run" && (args[1] === "freeze" || args[1] === "start" || args[1] === "inspect" || args[1] === "cancel") && args[2]) {
     const [, command, id] = args;
     const revision = option(args, "--revision");
@@ -53,6 +61,7 @@ export async function runCli(args: string[], write = console.log, request: Reque
   if (command === "suite") return runSuite(args.slice(1), write, request, { server, session });
   if (command !== "preview" || !file) {
     write("usage: benchi preview <suite.yaml> [--json] | benchi suite <validate|create|revise|list|get> | benchi run freeze <suite-id> --revision <n> | start|inspect|follow|cancel <run-id> | benchi trial submit <bundle.json> | cancel <run-id> <trial-id>");
+    write("usage: benchi preview <suite.yaml> [--json] | benchi suite <validate|create|revise|list|get> | benchi run freeze <suite-id> --revision <n> | start|inspect|follow|cancel <run-id> | benchi trial submit <bundle.json> | cancel <run-id> <trial-id> | benchi artifact inspect|download <id>");
     return 2;
   }
   const result = previewEvalSuite(await readFile(file, "utf8"));

@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1119.0",
+    "@benchi/artifact-repository": "workspace:*",
     "@benchi/contracts": "workspace:*",
     "pg": "^8.16.3"
   },

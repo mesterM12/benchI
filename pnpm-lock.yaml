@@ -179,6 +179,9 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.1119.0
         version: 3.1119.0
+      '@benchi/artifact-repository':
+        specifier: workspace:*
+        version: link:../artifact-repository
       '@benchi/contracts':
         specifier: workspace:*
         version: link:../contracts

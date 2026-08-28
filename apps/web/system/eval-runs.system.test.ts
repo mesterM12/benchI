@@ -67,6 +67,11 @@ describe("connected Git-backed Eval Run", () => {
     expect(await runCli(["run", "freeze", created.id, "--revision", "1", "--idempotency-key", "freeze-once"], output.push.bind(output), request, config)).toBe(0);
     expect(JSON.parse(output.pop()!).id).toBe(frozen.id);
 
+    await exec("git", ["-C", remote, "checkout", "--orphan", "removed"]);
+    await exec("git", ["-C", remote, "rm", "-rf", "."]);
+    await exec("git", ["-C", remote, "commit", "--allow-empty", "-m", "remove upstream content"]);
+    await exec("git", ["-C", remote, "branch", "-D", "main"]);
+
     expect(await runCli(["run", "inspect", frozen.id], output.push.bind(output), request, config)).toBe(0);
     const inspected = JSON.parse(output.pop()!);
     expect(inspected.trials).toEqual([expect.objectContaining({ id: "opencode__task__baseline__1" })]);

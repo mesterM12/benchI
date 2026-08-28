@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -191,11 +191,18 @@ export type FrozenOpenCodeExecution = {
   evidence: ExecutionEvidence[];
 };
 
-export async function executeFrozenOpenCodeTrial(input: { attemptId: string; remote: string; commit: string; prompt: string; acceptanceCommand: string; model: string }): Promise<FrozenOpenCodeExecution> {
+export async function executeFrozenOpenCodeTrial(input: { attemptId: string; remote: string; commit: string; sourceArchive: Buffer; prompt: string; acceptanceCommand: string; model: string }): Promise<FrozenOpenCodeExecution> {
   const repositoryPath = await mkdtemp(join(tmpdir(), "benchi-trial-"));
   try {
-    await promisify(execFile)("git", ["clone", "--no-checkout", "--", input.remote, repositoryPath]);
-    await promisify(execFile)("git", ["-C", repositoryPath, "checkout", "--detach", input.commit]);
+    const archivePath = join(repositoryPath, "source.tar");
+    await writeFile(archivePath, input.sourceArchive);
+    await promisify(execFile)("tar", ["-xf", archivePath], { cwd: repositoryPath });
+    await rm(archivePath);
+    await promisify(execFile)("git", ["-C", repositoryPath, "init"]);
+    await promisify(execFile)("git", ["-C", repositoryPath, "config", "user.email", "benchi@localhost"]);
+    await promisify(execFile)("git", ["-C", repositoryPath, "config", "user.name", "benchI"]);
+    await promisify(execFile)("git", ["-C", repositoryPath, "add", "."]);
+    await promisify(execFile)("git", ["-C", repositoryPath, "commit", "-m", "Frozen source"]);
     const result = await runOpenCodeTrial({
       attemptId: input.attemptId,
       repositoryPath,

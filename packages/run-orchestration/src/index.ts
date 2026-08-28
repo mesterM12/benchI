@@ -6,6 +6,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { Pool } from "pg";
 import type { Trial } from "@benchi/contracts";
+import { ArtifactRepository, type ArtifactCapability, type BlobStore, type Principal, migrate as migrateArtifacts } from "@benchi/artifact-repository";
 import { CreateBucketCommand, GetObjectCommand, HeadBucketCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
 export type LocalSource = { id: string; path: string };
@@ -40,7 +41,7 @@ export type EvalRunSnapshot = {
   benchiVersion: string;
   state: "Ready" | "Started" | "Cancelled";
 };
-export type AttemptArtifactManifest = { schemaVersion: "1"; artifacts: Array<{ path: string; contentIdentity: string; size: number }> };
+export type AttemptArtifactManifest = { schemaVersion: "1"; artifacts: Array<{ id: string; path: string; contentIdentity: string; size: number }> };
 export type RuntimeEnvironmentRecord = { schemaVersion: "1"; adapter: string; observedAt: string };
 export type CandidateResult = {
   classification: "EvaluationOutcome" | "InfrastructureFailure";
@@ -53,7 +54,7 @@ export type CommandReceipt = { id: string; idempotencyKey: string; replayed: boo
 export type TrialState = { trialId: string; state: "queued" | "running" | "completed" | "failed" | "cancelled"; attemptCount: number };
 export type EvalRunInspection = EvalRunSnapshot & { trialStates: TrialState[]; trialAttempts: TrialAttempt[] };
 export type WorkerLease = { jobId: string; trialId: string; state: string; generation: number; expiresAt?: string; infrastructureFailures: number };
-export type TrialExecution = { attemptId: string; remote: string; commit: string; prompt: string; acceptanceCommand: string; model: string };
+export type TrialExecution = { attemptId: string; remote: string; commit: string; sourceArchive: Buffer; prompt: string; acceptanceCommand: string; model: string };
 export type RunEvent = { sequence: number; sourceId: string; trialId: string; type: string; payload: unknown; occurredAt: string };
 
 export class DeterministicFakeAgent {
@@ -62,7 +63,7 @@ export class DeterministicFakeAgent {
     return {
       classification: "EvaluationOutcome",
       result: { status: "completed", digest: identity(bytes) },
-      artifactManifest: { schemaVersion: "1", artifacts: [{ path: "agent-result.json", contentIdentity: identity(bytes), size: bytes.length }] },
+      artifactManifest: { schemaVersion: "1", artifacts: [{ id: `fake:${invocation.trialId}`, path: "agent-result.json", contentIdentity: identity(bytes), size: bytes.length }] },
       runtimeEnvironment: { schemaVersion: "1", adapter: "deterministic-fake/v1", observedAt: "1970-01-01T00:00:00.000Z" }
     };
   }
@@ -201,10 +202,19 @@ export async function migrate(pool: Pool): Promise<void> {
     CREATE TRIGGER benchi_trial_attempts_are_immutable BEFORE UPDATE OR DELETE ON benchi_trial_attempts
       FOR EACH ROW EXECUTE FUNCTION reject_trial_attempt_change();
   `);
+  await migrateArtifacts(pool);
 }
 
 export class RunOrchestration {
-  constructor(private readonly pool: Pool, private readonly retainedContent: RetainedContent) {}
+  private readonly artifacts: ArtifactRepository;
+
+  constructor(private readonly pool: Pool, private readonly retainedContent: RetainedContent) {
+    const blobs: BlobStore = {
+      put: async (_contentIdentity, bytes) => this.retainedContent.putVerified(identity(bytes), bytes),
+      get: async (contentIdentity) => this.retainedContent.get(`sha256:${contentIdentity}`)
+    };
+    this.artifacts = new ArtifactRepository(pool, blobs);
+  }
 
   async freeze(command: FreezeEvalRun, idempotency?: { actorId: string; idempotencyKey: string }): Promise<EvalRunSnapshot> {
     const client = await this.pool.connect();
@@ -459,18 +469,28 @@ export class RunOrchestration {
     const agent = suite.agents?.find(({ id }) => id === trial.agentId);
     const source = run.sources.find((candidate) => candidate.id === task?.source);
     if (!task || !agent || !source || source.kind !== "git") throw new Error("Eval Trial is not executable");
-    return { attemptId: `${run.id}-${trial.id}-${lease.generation}`.replaceAll(/[^A-Za-z0-9._-]/g, "-"), remote: source.remote, commit: source.commit, prompt: task.prompt, acceptanceCommand: task.acceptance.command, model: agent.model };
+    const sourceArchive = await this.retainedContent.get(source.contentIdentity);
+    if (!sourceArchive || identity(sourceArchive) !== source.contentIdentity) throw new Error("Frozen source content is unavailable");
+    return { attemptId: `${run.id}-${trial.id}-${lease.generation}`.replaceAll(/[^A-Za-z0-9._-]/g, "-"), remote: source.remote, commit: source.commit, sourceArchive, prompt: task.prompt, acceptanceCommand: task.acceptance.command, model: agent.model };
   }
 
-  async retainEvidence(evidence: Array<{ path: string; bytes: Buffer }>): Promise<AttemptArtifactManifest> {
+  async retainEvidence(evidence: Array<{ path: string; bytes: Buffer }>, attemptId: string = randomUUID()): Promise<AttemptArtifactManifest> {
     const artifacts = await Promise.all(evidence.map(async ({ path, bytes }) => {
-      const contentIdentity = identity(bytes);
-      await this.retainedContent.putVerified(contentIdentity, bytes);
-      return { path, contentIdentity, size: bytes.length };
+      const id = `${attemptId}:${path}`;
+      await this.artifacts.retain({ id, bytes, visibility: "Organization-visible", createdBy: "system", capabilities: allCapabilities });
+      const artifact = await this.artifacts.inspect(id, systemPrincipal);
+      return { id, path, contentIdentity: artifact.contentIdentity, size: artifact.byteLength };
     }));
     return { schemaVersion: "1", artifacts };
   }
+
+  inspectArtifact(id: string, principal: Principal) { return this.artifacts.inspect(id, principal); }
+  issueArtifactDownload(id: string, principal: Principal) { return this.artifacts.issueDownloadCapability(id, principal); }
+  downloadArtifact(token: string, principal: Principal) { return this.artifacts.download(token, principal); }
 }
+
+const allCapabilities: ArtifactCapability[] = ["Rerunnable", "Rescorable", "Inspectable"];
+const systemPrincipal: Principal = { role: "Admin", actorId: "system" };
 
 async function readSuiteFile(root: string, path: string): Promise<Buffer> {
   if (isAbsolute(path)) throw new Error("source path escapes suite root");

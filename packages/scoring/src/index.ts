@@ -94,6 +94,20 @@ export function aggregateScores(inputs: readonly AggregateInput[]) {
   };
 }
 
+export function summarizeScoring(inputs: ReadonlyArray<{ required: boolean; weight: string; attempts: readonly ScoringAttempt[] }>) {
+  const completed = inputs.map(({ required, weight, attempts }) => {
+    const result = [...attempts].reverse().find((attempt): attempt is Extract<ScoringAttempt, { status: "completed" }> => attempt.status === "completed");
+    return { required, result, aggregate: result ? { status: "scored" as const, normalizedScore: result.result.normalizedScore, weight } : { status: "infrastructure-failure" as const, weight } };
+  });
+  const rejected = completed.some(({ required, result }) => required && result?.result.acceptanceJudgment === "rejected");
+  const hasResult = completed.some(({ result }) => result);
+  return {
+    classification: hasResult ? "EvaluationOutcome" as const : "InfrastructureFailure" as const,
+    acceptanceJudgment: rejected ? "rejected" as const : "accepted" as const,
+    aggregate: aggregateScores(completed.map(({ aggregate }) => aggregate))
+  };
+}
+
 function scaled(value: string): bigint {
   if (!decimalPattern.test(value) && !/^[1-9]\d*(?:\.\d{0,11}[1-9])?$/.test(value)) throw new Error("INVALID_DECIMAL");
   const [whole, fraction = ""] = value.split(".");

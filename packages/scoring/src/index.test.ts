@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aggregateScores, runScorer, validateScorerResult, validateScoringInputManifest, type ScoringInputManifest } from "./index.js";
+import { aggregateScores, runScorer, summarizeScoring, validateScorerResult, validateScoringInputManifest, type ScoringInputManifest } from "./index.js";
 
 const manifest: ScoringInputManifest = {
   kind: "ScoringInputManifest",
@@ -98,6 +98,25 @@ describe("weighted-mean/v1", () => {
     expect(aggregateScores([{ status: "evaluation-outcome", weight: "0" }])).toMatchObject({
       aggregateScore: null,
       finality: "provisional"
+    });
+  });
+});
+
+describe("completed Eval Trial scoring", () => {
+  it("keeps required rejection distinct from partial score and infrastructure failure", () => {
+    expect(summarizeScoring([
+      { required: true, weight: "2", attempts: [{ attempt: 1, status: "completed", result: { kind: "ScorerResult", schemaVersion: "1", acceptanceJudgment: "accepted", normalizedScore: "1" } }] },
+      { required: true, weight: "1", attempts: [{ attempt: 1, status: "completed", result: { kind: "ScorerResult", schemaVersion: "1", acceptanceJudgment: "rejected", normalizedScore: "0.5" } }] },
+      { required: true, weight: "1", attempts: [{ attempt: 1, status: "infrastructure-failure", message: "worker lost" }] }
+    ])).toEqual({
+      classification: "EvaluationOutcome",
+      acceptanceJudgment: "rejected",
+      aggregate: {
+        policy: "weighted-mean/v1",
+        aggregateScore: "0.833333333333",
+        completeness: { completed: 2, required: 3 },
+        finality: "provisional"
+      }
     });
   });
 });

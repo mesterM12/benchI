@@ -128,7 +128,9 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
       }
     };
   }
+  let baseline: string | null = null;
   try {
+    baseline = await revision(worktree.worktreePath);
     const result = await worktree.run({
       agent: opencode(input.model, options),
       sandbox: input.sandbox,
@@ -152,7 +154,7 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
         await sandbox.close();
       }
     }
-    const workspaceDiff = await captureWorkspaceDiff(worktree.worktreePath);
+    const workspaceDiff = await captureWorkspaceDiff(worktree.worktreePath, baseline);
     const close = await worktree.close();
     return evidence(input, started, now(), events, worktree, {
       status: "completed",
@@ -167,7 +169,7 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
       workspaceDiff
     });
   } catch (error) {
-    const workspaceDiff = await captureWorkspaceDiff(worktree.worktreePath);
+    const workspaceDiff = await captureWorkspaceDiff(worktree.worktreePath, baseline);
     let preservedWorktreePath: string | null;
     try {
       preservedWorktreePath = (await worktree.close()).preservedWorktreePath ?? null;
@@ -291,9 +293,17 @@ function evidence(input: OpenCodeTrialInput, started: Date, finished: Date, even
   };
 }
 
-async function captureWorkspaceDiff(repositoryPath: string): Promise<string | null> {
+async function revision(repositoryPath: string): Promise<string | null> {
   try {
-    return (await promisify(execFile)("git", ["-C", repositoryPath, "diff", "--binary"], { maxBuffer: 1024 * 1024 * 1024 })).stdout;
+    return (await promisify(execFile)("git", ["-C", repositoryPath, "rev-parse", "HEAD"])).stdout.trim();
+  } catch {
+    return null;
+  }
+}
+
+async function captureWorkspaceDiff(repositoryPath: string, baseline: string | null): Promise<string | null> {
+  try {
+    return (await promisify(execFile)("git", ["-C", repositoryPath, "diff", "--binary", baseline ?? "HEAD"], { maxBuffer: 1024 * 1024 * 1024 })).stdout;
   } catch {
     return null;
   }

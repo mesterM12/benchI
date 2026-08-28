@@ -61,6 +61,23 @@ describe("benchi", () => {
     ]);
   });
 
+  it("follows resumable events then reconciles terminal state", async () => {
+    const requests: string[] = [];
+    const request = async (url: string | URL | Request) => {
+      requests.push(String(url));
+      if (String(url).includes("/events")) return Response.json({ events: [{ sequence: 7, type: "output" }], jobs: [] });
+      return Response.json({ trialStates: [{ state: "completed" }] });
+    };
+    const output: string[] = [];
+
+    expect(await runCli(["run", "follow", "run-1"], (line) => output.push(line), request)).toBe(0);
+    expect(requests).toEqual([
+      "http://localhost:3000/api/v1/eval-runs/run-1/events?after=0",
+      "http://localhost:3000/api/v1/eval-runs/run-1"
+    ]);
+    expect(output).toEqual([JSON.stringify({ sequence: 7, type: "output" }), JSON.stringify({ trialStates: [{ state: "completed" }] })]);
+  });
+
   it("publishes Submitted Trials through API", async () => {
     const directory = await mkdtemp(join(tmpdir(), "benchi-"));
     const file = join(directory, "submission.json");

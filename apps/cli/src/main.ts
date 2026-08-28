@@ -21,15 +21,22 @@ export async function runCli(args: string[], write = console.log, request: Reque
     write(await response.text());
     return response.ok ? 0 : 1;
   }
-  if (args[0] === "run" && (args[1] === "freeze" || args[1] === "start" || args[1] === "inspect") && args[2]) {
+  if (args[0] === "trial" && args[1] === "cancel" && args[2] && args[3]) {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (session) headers.Cookie = session;
+    const response = await request(`${server}/api/v1/eval-runs/${encodeURIComponent(args[2])}/trials/${encodeURIComponent(args[3])}/cancel`, { method: "POST", headers });
+    write(await response.text());
+    return response.ok ? 0 : 1;
+  }
+  if (args[0] === "run" && (args[1] === "freeze" || args[1] === "start" || args[1] === "inspect" || args[1] === "cancel") && args[2]) {
     const [, command, id] = args;
     const revision = option(args, "--revision");
     if (command === "freeze" && (!revision || !Number.isInteger(Number(revision)) || Number(revision) < 1)) {
       write("usage: benchi run freeze <suite-id> --revision <n>");
       return 2;
     }
-    const path = command === "freeze" ? "/api/v1/eval-runs" : `/api/v1/eval-runs/${encodeURIComponent(id)}${command === "start" ? "/start" : ""}`;
-    const body = command === "freeze" ? { suiteId: id, revision: Number(revision) } : command === "start" ? {} : undefined;
+    const path = command === "freeze" ? "/api/v1/eval-runs" : `/api/v1/eval-runs/${encodeURIComponent(id)}${command === "start" || command === "cancel" ? `/${command}` : ""}`;
+    const body = command === "freeze" ? { suiteId: id, revision: Number(revision) } : command === "start" || command === "cancel" ? {} : undefined;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (session) headers.Cookie = session;
     if (body !== undefined) headers["Idempotency-Key"] = option(args, "--idempotency-key") ?? randomUUID();
@@ -41,10 +48,11 @@ export async function runCli(args: string[], write = console.log, request: Reque
     write(await response.text());
     return response.ok ? 0 : 1;
   }
+  if (args[0] === "run" && args[1] === "follow" && args[2]) return followRun(server, session, args[2], write, request);
   const [command, file] = args;
   if (command === "suite") return runSuite(args.slice(1), write, request, { server, session });
   if (command !== "preview" || !file) {
-    write("usage: benchi preview <suite.yaml> [--json] | benchi suite <validate|create|revise|list|get> | benchi run freeze <suite-id> --revision <n> | inspect <run-id> | benchi trial submit <bundle.json>");
+    write("usage: benchi preview <suite.yaml> [--json] | benchi suite <validate|create|revise|list|get> | benchi run freeze <suite-id> --revision <n> | start|inspect|follow|cancel <run-id> | benchi trial submit <bundle.json> | cancel <run-id> <trial-id>");
     return 2;
   }
   const result = previewEvalSuite(await readFile(file, "utf8"));
@@ -56,6 +64,31 @@ export async function runCli(args: string[], write = console.log, request: Reque
     for (const diagnostic of result.diagnostics) write(`${diagnostic.path} ${diagnostic.code}`);
   }
   return result.ok ? 0 : 1;
+}
+
+async function followRun(server: string, session: string | undefined, id: string, write: (line: string) => void, request: Request): Promise<number> {
+  const headers = session ? { Cookie: session } : undefined;
+  let after = 0;
+  const seen = new Set<number>();
+  for (;;) {
+    const events = await request(`${server}/api/v1/eval-runs/${encodeURIComponent(id)}/events?after=${after}`, { headers });
+    if (!events.ok) {
+      write(await events.text());
+      return 1;
+    }
+    const resumed = await events.json() as { events: Array<{ sequence: number }> };
+    for (const event of resumed.events) if (!seen.has(event.sequence)) {
+      seen.add(event.sequence);
+      after = Math.max(after, event.sequence);
+      write(JSON.stringify(event));
+    }
+    const inspection = await request(`${server}/api/v1/eval-runs/${encodeURIComponent(id)}`, { headers });
+    const run = await inspection.json() as { trialStates: Array<{ state: string }> };
+    write(JSON.stringify(run));
+    if (!inspection.ok) return 1;
+    if (run.trialStates.every(({ state }) => ["completed", "failed", "cancelled"].includes(state))) return 0;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
 }
 
 async function runSuite(args: string[], write: (line: string) => void, request: Request, config: Required<Pick<CliConfig, "server">> & CliConfig): Promise<number> {

@@ -65,6 +65,7 @@ export type OpenCodeTrialResult = {
   acceptance: { command: string; exitCode: number; stdout: string; stderr: string } | null;
   branch: string;
   preservedWorktreePath: string | null;
+  workspaceDiff: string | null;
   runtime: {
     adapter: "sandcastle/opencode";
     model: string;
@@ -113,6 +114,7 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
       acceptance: null,
       branch,
       preservedWorktreePath: null,
+      workspaceDiff: null,
       runtime: {
         adapter: "sandcastle/opencode",
         model: input.model,
@@ -150,6 +152,7 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
         await sandbox.close();
       }
     }
+    const workspaceDiff = await captureWorkspaceDiff(worktree.worktreePath);
     const close = await worktree.close();
     return evidence(input, started, now(), events, worktree, {
       status: "completed",
@@ -160,9 +163,11 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
       acceptance,
       iterations: result.iterations.length,
       logFilePath: result.logFilePath ?? null,
-      preservedWorktreePath: close.preservedWorktreePath ?? null
+      preservedWorktreePath: close.preservedWorktreePath ?? null,
+      workspaceDiff
     });
   } catch (error) {
+    const workspaceDiff = await captureWorkspaceDiff(worktree.worktreePath);
     let preservedWorktreePath: string | null;
     try {
       preservedWorktreePath = (await worktree.close()).preservedWorktreePath ?? null;
@@ -178,7 +183,8 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
       acceptance: null,
       iterations: 0,
       logFilePath: null,
-      preservedWorktreePath
+      preservedWorktreePath,
+      workspaceDiff
     });
   }
 }
@@ -212,6 +218,7 @@ export async function executeFrozenOpenCodeTrial(input: { attemptId: string; rem
       acceptanceCommand: input.acceptanceCommand
     });
     const evidence: ExecutionEvidence[] = [{ path: "sandcastle-result.json", bytes: Buffer.from(JSON.stringify(result)) }];
+    if (result.workspaceDiff !== null) evidence.push({ path: "workspace.patch", bytes: Buffer.from(result.workspaceDiff) });
     const finalCommit = result.commits.at(-1);
     if (finalCommit) {
       const archive = await promisify(execFile)("git", ["-C", repositoryPath, "archive", "--format=tar", finalCommit], { encoding: "buffer", maxBuffer: 1024 * 1024 * 1024 });
@@ -251,6 +258,7 @@ type Evidence = {
   iterations: number;
   logFilePath: string | null;
   preservedWorktreePath: string | null;
+  workspaceDiff: string | null;
 };
 
 function evidence(input: OpenCodeTrialInput, started: Date, finished: Date, events: OpenCodeTrialEvent[], worktree: Worktree, value: Evidence): OpenCodeTrialResult {
@@ -268,6 +276,7 @@ function evidence(input: OpenCodeTrialInput, started: Date, finished: Date, even
     acceptance: value.acceptance,
     branch: worktree.branch,
     preservedWorktreePath: value.preservedWorktreePath,
+    workspaceDiff: value.workspaceDiff,
     runtime: {
       adapter: "sandcastle/opencode",
       model: input.model,
@@ -280,6 +289,14 @@ function evidence(input: OpenCodeTrialInput, started: Date, finished: Date, even
       worktreeDisposition: preserved ? "preserved" : "cleaned"
     }
   };
+}
+
+async function captureWorkspaceDiff(repositoryPath: string): Promise<string | null> {
+  try {
+    return (await promisify(execFile)("git", ["-C", repositoryPath, "diff", "--binary"], { maxBuffer: 1024 * 1024 * 1024 })).stdout;
+  } catch {
+    return null;
+  }
 }
 
 function unavailableOutput(): OpenCodeTrialResult["output"] {

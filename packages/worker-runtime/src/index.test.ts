@@ -154,6 +154,7 @@ describe("OpenCode trial execution", () => {
       acceptance: null,
       branch: "benchi/trial-attempt-7",
       preservedWorktreePath: null,
+      workspaceDiff: null,
       runtime: {
         adapter: "sandcastle/opencode",
         model: "openai/gpt-5.6",

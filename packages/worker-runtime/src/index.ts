@@ -386,7 +386,10 @@ export class WorkerRuntime {
   }
 }
 
-export const networkEscapeTargets = ["dns", "ipv4", "ipv6", "host-gateway", "local-network", "metadata", "peer-service"] as const;
+export const networkEscapeTargets = [
+  "dns", "ipv4", "ipv6", "host-gateway", "local-network", "metadata", "peer-service",
+  "mount", "daemon-credential", "secret", "process", "capability"
+] as const;
 export type NetworkEscapeTarget = typeof networkEscapeTargets[number];
 export type NativeLinuxConformanceProbe = {
   inspectIsolation(): Promise<boolean>;

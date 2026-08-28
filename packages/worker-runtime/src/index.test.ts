@@ -77,7 +77,10 @@ describe("native Linux conformance", () => {
       attemptNetwork: async (target) => { attempts.push(target); return false; }
     });
     expect(result).toEqual({ conformant: true, failures: [] });
-    expect(attempts).toEqual(["dns", "ipv4", "ipv6", "host-gateway", "local-network", "metadata", "peer-service"]);
+    expect(attempts).toEqual([
+      "dns", "ipv4", "ipv6", "host-gateway", "local-network", "metadata", "peer-service",
+      "mount", "daemon-credential", "secret", "process", "capability"
+    ]);
   });
 
   it("fails closed on weak isolation or any network escape", async () => {
@@ -86,6 +89,15 @@ describe("native Linux conformance", () => {
       attemptNetwork: async (target) => target === "metadata"
     });
     expect(result).toEqual({ conformant: false, failures: ["ISOLATION_PROFILE_INVALID", "NETWORK_ESCAPE:metadata"] });
+  });
+
+  it("fails closed when host mounts, credentials, secrets, processes, or capabilities escape", async () => {
+    const result = await runNativeLinuxConformance({
+      inspectIsolation: async () => true,
+      attemptNetwork: async (target) => target === "daemon-credential" || target === "capability"
+    });
+
+    expect(result).toEqual({ conformant: false, failures: ["NETWORK_ESCAPE:daemon-credential", "NETWORK_ESCAPE:capability"] });
   });
 });
 

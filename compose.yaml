@@ -19,7 +19,7 @@ x-application: &application
     postgres:
       condition: service_healthy
     object-storage:
-      condition: service_started
+      condition: service_healthy
 
 services:
   postgres:
@@ -46,6 +46,11 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-benchi-local}
     volumes:
       - object-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   bootstrap:
     <<: *application
@@ -71,6 +76,10 @@ services:
     depends_on:
       bootstrap:
         condition: service_completed_successfully
+      orchestrator:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
 
   orchestrator:
     <<: *application
@@ -79,6 +88,11 @@ services:
       <<: *application-environment
       BENCHI_ROLE: orchestrator
       PORT: 3001
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   worker:
     <<: *application
@@ -87,6 +101,11 @@ services:
       <<: *application-environment
       BENCHI_ROLE: worker
       PORT: 3002
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3002/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
 volumes:
   postgres-data:

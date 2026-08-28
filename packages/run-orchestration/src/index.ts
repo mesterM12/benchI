@@ -447,6 +447,11 @@ export class RunOrchestration {
     return { ...run.rows[0].snapshot, state: run.rows[0].state, trials: trials.rows.map(({ trial }) => trial) };
   }
 
+  async list(): Promise<Array<Pick<EvalRunSnapshot, "id" | "suiteRevisionId" | "frozenAt" | "state">>> {
+    const result = await this.pool.query<{ state: EvalRunSnapshot["state"]; snapshot: EvalRunSnapshot }>("SELECT state, snapshot FROM benchi_eval_run_snapshots ORDER BY frozen_at DESC");
+    return result.rows.map(({ state, snapshot }) => ({ id: snapshot.id, suiteRevisionId: snapshot.suiteRevisionId, frozenAt: snapshot.frozenAt, state }));
+  }
+
   async inspect(id: string): Promise<EvalRunInspection | undefined> {
     const run = await this.get(id);
     if (!run) return undefined;

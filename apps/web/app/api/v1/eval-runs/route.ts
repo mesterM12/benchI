@@ -44,4 +44,12 @@ export function createEvalRunPost(services: { member: typeof member; definitions
  };
 }
 
+export function createEvalRunListGet(services: { member: typeof member; runs: Pick<typeof runs, "list"> }) {
+ return async function GET(request: Request) {
+   if (!await services.member(request.headers)) return Response.json({ code: "UNAUTHENTICATED" }, { status: 401 });
+   return Response.json({ items: await services.runs.list() });
+ };
+}
+
 export const POST = createEvalRunPost({ member, definitions, runs });
+export const GET = createEvalRunListGet({ member, runs });

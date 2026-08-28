@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const definitions = { get: vi.fn() };
-const runs = { freeze: vi.fn() };
+const runs = { freeze: vi.fn(), list: vi.fn() };
 vi.mock("../../../../lib/server", () => ({ definitions, runs, member: vi.fn().mockResolvedValue("member-1") }));
 
 describe("/api/v1/eval-runs", () => {
@@ -37,5 +37,15 @@ describe("/api/v1/eval-runs", () => {
     const response = await POST(new Request("http://localhost/api/v1/eval-runs", { method: "POST", body: "{}" }));
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ code: "IDEMPOTENCY_KEY_REQUIRED" });
+  });
+
+  it("lists authoritative Eval Runs", async () => {
+    runs.list.mockResolvedValue([{ id: "run-1", state: "Started" }]);
+    const { GET } = await import("./route");
+
+    const response = await GET(new Request("http://localhost/api/v1/eval-runs"));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ items: [{ id: "run-1", state: "Started" }] });
   });
 });

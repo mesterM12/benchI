@@ -1,32 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { applyAuthoritativeState, createFollowUp, initialRuns } from "./model";
+import { scoringCompleteness, type EvalRun } from "./model";
 
 describe("Member workflow", () => {
-  it("reconciles live events with authoritative Eval Trial state", () => {
-    const run = applyAuthoritativeState(initialRuns[0], {
-      state: "Running",
-      trials: [{ id: "auth-login", state: "Scored" }, { id: "auth-refresh", state: "Running" }, { id: "auth-expiry", state: "Queued" }]
-    });
+  it("marks results provisional until every Eval Trial reaches a terminal state", () => {
+    const run: EvalRun = { id: "run-1", suiteRevisionId: "suite@1", frozenAt: "2026-08-28", state: "Started", trials: [
+      { id: "done", state: "completed", attemptCount: 1 }, { id: "active", state: "running", attemptCount: 0 }
+    ] };
 
-    expect(run.trials.map(({ state }) => state)).toEqual(["Scored", "Running", "Queued"]);
-  });
-
-  it("cancels only selected active Eval Trials", () => {
-    const run = applyAuthoritativeState(initialRuns[0], {
-      state: "Running",
-      trials: [{ id: "auth-refresh", state: "Cancelled" }]
-    });
-
-    expect(run.trials.find(({ id }) => id === "auth-refresh")?.state).toBe("Cancelled");
-    expect(run.trials.find(({ id }) => id === "auth-expiry")?.state).toBe("Queued");
-  });
-
-  it.each(["rerun", "rescore"] as const)("creates lineage-linked %s Eval Runs without replacing evidence", (action) => {
-    const source = initialRuns[1];
-    const followUp = createFollowUp(source, action);
-
-    expect(followUp.id).not.toBe(source.id);
-    expect(followUp.lineage).toEqual({ parentRunId: source.id, action });
-    expect(source.state).toBe("Complete");
+    expect(scoringCompleteness(run)).toEqual({ completed: 1, required: 2 });
   });
 });

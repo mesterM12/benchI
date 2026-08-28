@@ -108,6 +108,19 @@ services:
       timeout: 3s
       retries: 20
 
+  release-acceptance:
+    <<: *application
+    profiles: ["acceptance"]
+    restart: "no"
+    read_only: false
+    environment:
+      <<: *application-environment
+      OPENCODE_CHARACTERIZATION_MODEL: ${OPENCODE_CHARACTERIZATION_MODEL:?set OPENCODE_CHARACTERIZATION_MODEL}
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    command: ["sh", "scripts/release-acceptance.sh"]
+
 volumes:
   postgres-data:
   object-data:

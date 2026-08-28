@@ -18,7 +18,6 @@ protocol("Freeze Eval Run Protocol Transaction", () => {
 
   beforeAll(async () => {
     await migrate(pool);
-    await pool.query("TRUNCATE benchi_trial_attempts, benchi_phase_jobs, benchi_eval_trials, benchi_eval_run_snapshots CASCADE");
     root = await mkdtemp(join(tmpdir(), "benchi-freeze-"));
     await mkdir(join(root, "tasks"));
     await writeFile(join(root, "tasks", "prompt.md"), "Fix checkout.\n");
@@ -126,6 +125,7 @@ protocol("Freeze Eval Run Protocol Transaction", () => {
   });
 
   it("does not schedule Submission Slot Eval Trials for an agent", async () => {
+    await pool.query("TRUNCATE benchi_trial_attempts, benchi_phase_jobs, benchi_eval_trials, benchi_eval_run_snapshots CASCADE");
     const runs = new RunOrchestration(pool, new InMemoryRetainedContent());
     await runs.freeze({
       id: "run-submissions", suiteRevisionId: "suite-revision-7", suiteRoot: root,

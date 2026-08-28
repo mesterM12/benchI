@@ -56,6 +56,19 @@ The suite's Git source must be reachable from worker. `run inspect` retains evid
 
 Recovery and release behavior lives in `@benchi/operations`. Authenticated Backup Sets restore with both Admission gates closed, replay every Recovery Safety Record, and require read and scheduling Admission to be opened independently. Upgrades verify signed release metadata, run schema preflight, preserve a rollback boundary until explicit finalization, and leave scheduling closed after finalization. Support bundles redact credential-bearing fields recursively.
 
+### Release acceptance
+
+Release acceptance uses PostgreSQL and S3-compatible object storage from the supported Compose Installation. It runs cancellation/commit races, worker-death lease recovery, bounded infrastructure retries, retained-artifact loss, secret-grant and Secret Version revocation, Backup Set restore, interrupted upgrades, retained-content provider conformance, worker lifecycle conformance, and real OpenCode characterization. Deterministic adapters cover repeatable release behavior; OpenCode remains a separate real-provider characterization.
+
+Set an authenticated OpenCode model supported by the installed OpenCode provider, then run this uncached command. It fails when any scenario fails; it does not skip the real OpenCode characterization.
+
+```sh
+OPENCODE_CHARACTERIZATION_MODEL='provider/model' docker compose --profile acceptance build --no-cache release-acceptance
+OPENCODE_CHARACTERIZATION_MODEL='provider/model' docker compose --profile acceptance run --rm release-acceptance
+```
+
+Verified claims: retained Git inputs, attempt evidence, PostgreSQL-backed leases, S3-compatible retained content, recovery safety gates, and signed upgrade rollback boundaries. benchI does not claim host isolation beyond configured Sandcastle behavior, identical outcome reproduction for nondeterministic providers, or reconstruction after deleted/tombstoned required artifacts.
+
 ## Reference project
 
 The previous standalone implementation is available locally at `.eval-new/`. It is intentionally excluded from this repository and should be treated as read-only reference material.

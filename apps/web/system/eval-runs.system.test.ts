@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,15 +13,15 @@ import { createEvalSuitePost } from "../app/api/v1/eval-suites/route.js";
 import { createEvalRunPost } from "../app/api/v1/eval-runs/route.js";
 import { createEvalRunGet } from "../app/api/v1/eval-runs/[id]/route.js";
 import { createEvalRunStartPost } from "../app/api/v1/eval-runs/[id]/start/route.js";
-import { createEvalRunExecutor } from "../lib/eval-execution.js";
 
 const exec = promisify(execFile);
 const databaseUrl = required("TEST_DATABASE_URL");
+const bucket = `benchi-system-${randomUUID()}`;
 const content = createS3RetainedContent({
   endpoint: required("TEST_OBJECT_STORAGE_ENDPOINT"),
   accessKeyId: required("TEST_OBJECT_STORAGE_ACCESS_KEY"),
   secretAccessKey: required("TEST_OBJECT_STORAGE_SECRET_KEY"),
-  bucket: `benchi-system-${randomUUID()}`
+  bucket
 });
 const pool = new Pool({ connectionString: databaseUrl });
 const definitions = new EvaluationDefinition(pool);
@@ -31,7 +31,7 @@ const ids = ["run-connected", "run-replay-unused", "run-failed"];
 const suitePost = createEvalSuitePost({ member, definitions });
 const runPost = createEvalRunPost({ member, definitions, runs, id: () => ids.shift()!, now: () => new Date("2026-08-27T12:00:00.000Z") });
 const runGet = createEvalRunGet({ member, runs });
-const runStart = createEvalRunStartPost({ member, runs, execute: createEvalRunExecutor(runs) });
+const runStart = createEvalRunStartPost({ member, runs });
 
 describe("connected Git-backed Eval Run", () => {
   beforeAll(async () => {
@@ -76,10 +76,29 @@ describe("connected Git-backed Eval Run", () => {
 
     expect(await runCli(["run", "start", frozen.id, "--idempotency-key", "start-once"], output.push.bind(output), request, config)).toBe(0);
     expect(JSON.parse(output.pop()!)).toMatchObject({ idempotencyKey: "start-once", replayed: false });
-    expect(await runCli(["run", "inspect", frozen.id], output.push.bind(output), request, config)).toBe(0);
-    const completed = JSON.parse(output.pop()!);
-    expect(completed.jobs).toEqual([expect.objectContaining({ state: "completed" })]);
-    expect(completed.attempts).toEqual([expect.objectContaining({ classification: "EvaluationOutcome", result: expect.objectContaining({ status: "completed", commits: [expect.any(String)] }) })]);
+    const staleNow = new Date(Date.now() - 2_000);
+    expect(await runs.leaseNext("dead-worker", staleNow.toISOString(), new Date(staleNow.getTime() + 1_000).toISOString())).toMatchObject({ generation: 1 });
+    const processes = [startRole("orchestrator", 31038), startRole("worker", 31039)];
+    try {
+      await Promise.all([waitForHealth(31038), waitForHealth(31039)]);
+      const completed = await waitForCompletion(frozen.id, output, processes);
+      expect(completed).not.toHaveProperty("jobs");
+      expect(completed.trialStates).toEqual([expect.objectContaining({ state: "completed", attemptCount: 1 })]);
+      expect(completed.trialAttempts).toEqual([expect.objectContaining({
+        classification: "EvaluationOutcome",
+        result: expect.objectContaining({ outcome: "passed", execution: expect.objectContaining({ status: "completed", commits: [expect.any(String)], acceptance: expect.objectContaining({ command: "npm test", exitCode: 0 }) }) })
+      })]);
+      const artifacts = completed.trialAttempts[0].artifactManifest.artifacts as Array<{ path: string; contentIdentity: string; size: number }>;
+      expect(artifacts.map(({ path }) => path)).toEqual(expect.arrayContaining(["sandcastle-result.json", "mutated-repository.tar", "sandcastle.log"]));
+      for (const artifact of artifacts) expect((await content.get(artifact.contentIdentity))?.length).toBe(artifact.size);
+      const archive = await content.get(artifacts.find(({ path }) => path === "mutated-repository.tar")!.contentIdentity);
+      const checkout = await mkdtemp(join(tmpdir(), "benchi-accepted-"));
+      await writeFile(join(checkout, "repository.tar"), archive!);
+      await exec("tar", ["-xf", "repository.tar"], { cwd: checkout });
+      await expect(exec("npm", ["test"], { cwd: checkout })).resolves.toMatchObject({ stderr: "" });
+    } finally {
+      await Promise.all(processes.map(stopRole));
+    }
     expect(await runCli(["run", "start", frozen.id, "--idempotency-key", "start-once"], output.push.bind(output), request, config)).toBe(0);
     expect(JSON.parse(output.pop()!)).toMatchObject({ idempotencyKey: "start-once", replayed: true });
 
@@ -111,4 +130,52 @@ function required(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is required`);
   return value;
+}
+
+function startRole(role: "orchestrator" | "worker", port: number): { process: ChildProcess; logs: string[] } {
+  const logs: string[] = [];
+  const child = spawn(process.execPath, [join(process.cwd(), "../ops-runtime/dist/main.js")], {
+    env: {
+      ...process.env,
+      BENCHI_ROLE: role,
+      PORT: String(port),
+      DATABASE_URL: databaseUrl,
+      OBJECT_STORAGE_ENDPOINT: required("TEST_OBJECT_STORAGE_ENDPOINT"),
+      OBJECT_STORAGE_ACCESS_KEY: required("TEST_OBJECT_STORAGE_ACCESS_KEY"),
+      OBJECT_STORAGE_SECRET_KEY: required("TEST_OBJECT_STORAGE_SECRET_KEY"),
+      OBJECT_STORAGE_BUCKET: bucket,
+      BENCHI_POLL_MS: "100",
+      BENCHI_LEASE_MS: "3000",
+      BENCHI_HEARTBEAT_MS: "500"
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  child.stdout?.on("data", (value) => logs.push(String(value)));
+  child.stderr?.on("data", (value) => logs.push(String(value)));
+  return { process: child, logs };
+}
+
+async function waitForHealth(port: number): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { if ((await fetch(`http://127.0.0.1:${port}/health`)).ok) return; } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`role on ${port} did not become healthy`);
+}
+
+async function waitForCompletion(runId: string, output: string[], processes: Array<{ process: ChildProcess; logs: string[] }>): Promise<any> {
+  for (let attempt = 0; attempt < 1200; attempt++) {
+    expect(await runCli(["run", "inspect", runId], output.push.bind(output), request, config)).toBe(0);
+    const inspected = JSON.parse(output.pop()!);
+    if (inspected.trialStates[0]?.state === "completed") return inspected;
+    if (processes.some(({ process }) => process.exitCode !== null)) throw new Error(processes.flatMap(({ logs }) => logs).join("\n"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Eval Run did not complete:\n${processes.flatMap(({ logs }) => logs).join("\n")}`);
+}
+
+async function stopRole({ process: child }: { process: ChildProcess }): Promise<void> {
+  if (child.exitCode !== null) return;
+  child.kill("SIGTERM");
+  await new Promise<void>((resolve) => child.once("exit", () => resolve()));
 }

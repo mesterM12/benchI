@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -63,6 +62,7 @@ export type OpenCodeTrialResult = {
     stderr: { availability: "unavailable"; text: null; reason: "Sandcastle public agent-run API does not expose stderr" };
   };
   commits: string[];
+  acceptance: { command: string; exitCode: number; stdout: string; stderr: string } | null;
   branch: string;
   preservedWorktreePath: string | null;
   runtime: {
@@ -87,6 +87,7 @@ export type OpenCodeTrialInput = {
   agent?: string;
   env?: Record<string, string>;
   signal?: AbortSignal;
+  acceptanceCommand?: string;
   now?: () => Date;
 };
 
@@ -109,6 +110,7 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
       events,
       output: unavailableOutput(),
       commits: [],
+      acceptance: null,
       branch,
       preservedWorktreePath: null,
       runtime: {
@@ -138,6 +140,16 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
       },
       signal: input.signal
     });
+    let acceptance: OpenCodeTrialResult["acceptance"] = null;
+    if (input.acceptanceCommand) {
+      const sandbox = await worktree.createSandbox({ sandbox: input.sandbox });
+      try {
+        const executed = await sandbox.exec(input.acceptanceCommand);
+        acceptance = { command: input.acceptanceCommand, exitCode: executed.exitCode, stdout: executed.stdout, stderr: executed.stderr };
+      } finally {
+        await sandbox.close();
+      }
+    }
     const close = await worktree.close();
     return evidence(input, started, now(), events, worktree, {
       status: "completed",
@@ -145,6 +157,7 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
       completionSignal: result.completionSignal ?? null,
       stdout: result.stdout,
       commits: result.commits.map(({ sha }) => sha),
+      acceptance,
       iterations: result.iterations.length,
       logFilePath: result.logFilePath ?? null,
       preservedWorktreePath: close.preservedWorktreePath ?? null
@@ -162,6 +175,7 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
       completionSignal: null,
       stdout: null,
       commits: [],
+      acceptance: null,
       iterations: 0,
       logFilePath: null,
       preservedWorktreePath
@@ -169,7 +183,15 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
   }
 }
 
-export async function executeFrozenOpenCodeTrial(input: { attemptId: string; remote: string; commit: string; prompt: string; acceptanceCommand: string; model: string }) {
+export type ExecutionEvidence = { path: string; bytes: Buffer };
+export type FrozenOpenCodeExecution = {
+  classification: "EvaluationOutcome" | "InfrastructureFailure";
+  result: { outcome: "passed" | "failed"; execution: OpenCodeTrialResult; diagnostics: string[] };
+  runtimeEnvironment: { schemaVersion: "1"; adapter: string; observedAt: string };
+  evidence: ExecutionEvidence[];
+};
+
+export async function executeFrozenOpenCodeTrial(input: { attemptId: string; remote: string; commit: string; prompt: string; acceptanceCommand: string; model: string }): Promise<FrozenOpenCodeExecution> {
   const repositoryPath = await mkdtemp(join(tmpdir(), "benchi-trial-"));
   try {
     await promisify(execFile)("git", ["clone", "--no-checkout", "--", input.remote, repositoryPath]);
@@ -179,14 +201,33 @@ export async function executeFrozenOpenCodeTrial(input: { attemptId: string; rem
       repositoryPath,
       prompt: `${input.prompt}\nRun ${input.acceptanceCommand}, fix failures, rerun it, and commit the completed work.`,
       model: input.model,
-      sandbox: noSandbox()
+      sandbox: noSandbox(),
+      acceptanceCommand: input.acceptanceCommand
     });
-    const bytes = Buffer.from(JSON.stringify(result));
+    const evidence: ExecutionEvidence[] = [{ path: "sandcastle-result.json", bytes: Buffer.from(JSON.stringify(result)) }];
+    const finalCommit = result.commits.at(-1);
+    if (finalCommit) {
+      const archive = await promisify(execFile)("git", ["-C", repositoryPath, "archive", "--format=tar", finalCommit], { encoding: "buffer", maxBuffer: 1024 * 1024 * 1024 });
+      evidence.push({ path: "mutated-repository.tar", bytes: archive.stdout });
+    }
+    if (result.runtime.logFilePath) {
+      try { evidence.push({ path: "sandcastle.log", bytes: await readFile(result.runtime.logFilePath) }); } catch {}
+    }
+    if (result.preservedWorktreePath) {
+      try {
+        const diff = await promisify(execFile)("git", ["-C", result.preservedWorktreePath, "diff", "--binary"], { encoding: "buffer", maxBuffer: 1024 * 1024 * 1024 });
+        evidence.push({ path: "failed-worktree.patch", bytes: diff.stdout });
+      } catch {}
+    }
+    const passed = result.status === "completed" && result.acceptance?.exitCode === 0;
+    const diagnostics = result.status !== "completed"
+      ? [result.error?.message ?? `Sandcastle execution ${result.status}`]
+      : result.acceptance ? (passed ? [] : [`Acceptance exited ${result.acceptance.exitCode}`]) : ["Acceptance was not executed"];
     return {
-      classification: "EvaluationOutcome" as const,
-      result,
-      artifactManifest: { schemaVersion: "1" as const, artifacts: [{ path: "sandcastle-result.json", contentIdentity: `sha256:${createHash("sha256").update(bytes).digest("hex")}`, size: bytes.length }] },
-      runtimeEnvironment: { schemaVersion: "1" as const, adapter: result.runtime.adapter, observedAt: result.runtime.finishedAt }
+      classification: result.status === "completed" ? "EvaluationOutcome" : "InfrastructureFailure",
+      result: { outcome: passed ? "passed" : "failed", execution: result, diagnostics },
+      runtimeEnvironment: { schemaVersion: "1", adapter: result.runtime.adapter, observedAt: result.runtime.finishedAt },
+      evidence
     };
   } finally {
     await rm(repositoryPath, { recursive: true, force: true });
@@ -199,6 +240,7 @@ type Evidence = {
   completionSignal: string | null;
   stdout: string | null;
   commits: string[];
+  acceptance: OpenCodeTrialResult["acceptance"];
   iterations: number;
   logFilePath: string | null;
   preservedWorktreePath: string | null;
@@ -216,6 +258,7 @@ function evidence(input: OpenCodeTrialInput, started: Date, finished: Date, even
       stderr: unavailableOutput().stderr
     },
     commits: value.commits,
+    acceptance: value.acceptance,
     branch: worktree.branch,
     preservedWorktreePath: value.preservedWorktreePath,
     runtime: {

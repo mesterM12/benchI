@@ -151,6 +151,7 @@ describe("OpenCode trial execution", () => {
         stderr: { availability: "unavailable", text: null, reason: "Sandcastle public agent-run API does not expose stderr" }
       },
       commits: ["abc123"],
+      acceptance: null,
       branch: "benchi/trial-attempt-7",
       preservedWorktreePath: null,
       runtime: {
@@ -165,6 +166,21 @@ describe("OpenCode trial execution", () => {
         worktreeDisposition: "cleaned"
       }
     });
+  });
+
+  it("independently runs acceptance and records its exit status", async () => {
+    const exec = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "ok\n", stderr: "" });
+    vi.mocked(createWorktree).mockResolvedValue({
+      branch: "benchi/accepted", worktreePath: "/repo/worktree",
+      run: async () => ({ iterations: [{}], stdout: "done", commits: [{ sha: "abc123" }] }),
+      createSandbox: async () => ({ exec, close: async () => ({}) }),
+      close: async () => ({})
+    } as unknown as Worktree);
+
+    const result = await runOpenCodeTrial({ attemptId: "accepted", repositoryPath: "/repo", prompt: "fix", model: "model", sandbox: {} as SandboxProvider, acceptanceCommand: "npm test" });
+
+    expect(exec).toHaveBeenCalledWith("npm test");
+    expect(result.acceptance).toEqual({ command: "npm test", exitCode: 0, stdout: "ok\n", stderr: "" });
   });
 
   it.each(["failed", "cancelled"] as const)("returns %s evidence and preserves its worktree", async (status) => {

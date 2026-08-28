@@ -50,8 +50,10 @@ export type CandidateResult = {
 };
 export type TrialAttempt = CandidateResult & { id: string; trialId: string; committedAt: string };
 export type CommandReceipt = { id: string; idempotencyKey: string; replayed: boolean };
-export type EvalRunInspection = EvalRunSnapshot & { jobs: WorkerLease[]; attempts: TrialAttempt[] };
+export type TrialState = { trialId: string; state: "queued" | "running" | "completed" | "failed" | "cancelled"; attemptCount: number };
+export type EvalRunInspection = EvalRunSnapshot & { trialStates: TrialState[]; trialAttempts: TrialAttempt[] };
 export type WorkerLease = { jobId: string; trialId: string; state: string; generation: number; expiresAt?: string; infrastructureFailures: number };
+export type TrialExecution = { attemptId: string; remote: string; commit: string; prompt: string; acceptanceCommand: string; model: string };
 export type RunEvent = { sequence: number; sourceId: string; trialId: string; type: string; payload: unknown; occurredAt: string };
 
 export class DeterministicFakeAgent {
@@ -68,6 +70,7 @@ export class DeterministicFakeAgent {
 
 export interface RetainedContent {
   putVerified(contentIdentity: string, bytes: Buffer): Promise<void>;
+  get(contentIdentity: string): Promise<Buffer | undefined>;
 }
 
 export class InMemoryRetainedContent implements RetainedContent {
@@ -434,7 +437,38 @@ export class RunOrchestration {
     if (!run) return undefined;
     const result = await this.resumeEvents(id, 0);
     const attempts = (await Promise.all(run.trials.map(({ id: trialId }) => this.listAttempts(trialId)))).flat();
-    return { ...run, jobs: result.jobs, attempts };
+    return {
+      ...run,
+      trialStates: run.trials.map(({ id: trialId }) => {
+        const job = result.jobs.find(({ trialId: candidate }) => candidate === trialId);
+        const attemptCount = attempts.filter(({ trialId: candidate }) => candidate === trialId).length;
+        const state = !job ? "queued" : job.state === "completed" || job.state === "failed" || job.state === "cancelled" ? job.state : job.state === "queued" ? "queued" : "running";
+        return { trialId, state, attemptCount };
+      }),
+      trialAttempts: attempts
+    };
+  }
+
+  async executionFor(lease: WorkerLease): Promise<TrialExecution> {
+    const result = await this.pool.query<{ snapshot: EvalRunSnapshot; trial: Trial }>("SELECT runs.snapshot, trials.trial FROM benchi_eval_run_snapshots runs JOIN benchi_eval_trials trials ON trials.run_id = runs.id WHERE trials.id = $1", [lease.trialId]);
+    const run = result.rows[0]?.snapshot;
+    const trial = result.rows[0]?.trial;
+    if (!run || !trial || trial.agentId === undefined) throw new Error("Eval Trial is not executable");
+    const suite = run.suite as { agents?: Array<{ id: string; model: string }>; tasks?: Array<{ id: string; source: string; prompt: string; acceptance: { command: string } }> };
+    const task = suite.tasks?.find(({ id }) => id === trial.taskId);
+    const agent = suite.agents?.find(({ id }) => id === trial.agentId);
+    const source = run.sources.find((candidate) => candidate.id === task?.source);
+    if (!task || !agent || !source || source.kind !== "git") throw new Error("Eval Trial is not executable");
+    return { attemptId: `${run.id}-${trial.id}-${lease.generation}`.replaceAll(/[^A-Za-z0-9._-]/g, "-"), remote: source.remote, commit: source.commit, prompt: task.prompt, acceptanceCommand: task.acceptance.command, model: agent.model };
+  }
+
+  async retainEvidence(evidence: Array<{ path: string; bytes: Buffer }>): Promise<AttemptArtifactManifest> {
+    const artifacts = await Promise.all(evidence.map(async ({ path, bytes }) => {
+      const contentIdentity = identity(bytes);
+      await this.retainedContent.putVerified(contentIdentity, bytes);
+      return { path, contentIdentity, size: bytes.length };
+    }));
+    return { schemaVersion: "1", artifacts };
   }
 }
 

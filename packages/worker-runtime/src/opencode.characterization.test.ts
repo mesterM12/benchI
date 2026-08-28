@@ -37,11 +37,13 @@ describe.runIf(characterize)("real OpenCode through Sandcastle", () => {
         prompt: "Run npm test, fix the bug, rerun the test, commit the fix, then emit <promise>COMPLETE</promise>.",
         model: process.env.OPENCODE_CHARACTERIZATION_MODEL ?? "opencode/big-pickle",
         sandbox: noSandbox(),
+        acceptanceCommand: "npm test"
       });
 
       expect(result.status).toBe("completed");
       expect(result.completionSignal).toBe("<promise>COMPLETE</promise>");
       expect(result.commits).toHaveLength(1);
+      expect(result.acceptance).toMatchObject({ command: "npm test", exitCode: 0 });
       expect(result.branch).toBe("benchi/real-opencode");
       expect(result.preservedWorktreePath).toBeNull();
       await expect(exec("git", ["merge-base", "--is-ancestor", baseRevision.trim(), result.commits[0]!], { cwd: repositoryPath })).resolves.toBeDefined();

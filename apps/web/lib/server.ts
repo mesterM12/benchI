@@ -12,7 +12,7 @@ const objectStorageAccessKey = process.env.OBJECT_STORAGE_ACCESS_KEY;
 const objectStorageSecretKey = process.env.OBJECT_STORAGE_SECRET_KEY;
 export const runs = new RunOrchestration(pool, objectStorageEndpoint && objectStorageAccessKey && objectStorageSecretKey
   ? createS3RetainedContent({ endpoint: objectStorageEndpoint, accessKeyId: objectStorageAccessKey, secretAccessKey: objectStorageSecretKey })
-  : { async putVerified() { throw new Error("object storage configuration is required"); } });
+  : { async putVerified() { throw new Error("object storage configuration is required"); }, async get() { throw new Error("object storage configuration is required"); } });
 export const submittedTrials = new SubmittedTrials(pool, {
   async verify(contentIdentity) {
     const endpoint = process.env.RETAINED_CONTENT_VERIFIER_URL;

@@ -280,7 +280,7 @@ export class RunOrchestration {
       }
       const result = await client.query("UPDATE benchi_eval_run_snapshots SET state = 'Started' WHERE id = $1 AND state = 'Ready'", [id]);
       if (result.rowCount !== 1) throw new Error("Eval Run is not Ready");
-      await client.query("INSERT INTO benchi_phase_jobs (id, trial_id, state, infrastructure_retry_limit) SELECT 'phase:' || id, id, 'queued', $2 FROM benchi_eval_trials WHERE run_id = $1", [id, infrastructureRetryLimit]);
+      await client.query("INSERT INTO benchi_phase_jobs (id, trial_id, state, infrastructure_retry_limit) SELECT 'phase:' || id, id, 'queued', $2 FROM benchi_eval_trials WHERE run_id = $1 AND trial ? 'agentId'", [id, infrastructureRetryLimit]);
       const receipt = { id: randomUUID(), idempotencyKey: command?.idempotencyKey ?? randomUUID(), replayed: false };
       if (command) await client.query("INSERT INTO benchi_eval_run_start_receipts (actor_id, idempotency_key, run_id, receipt) VALUES ($1, $2, $3, $4)", [command.actorId, command.idempotencyKey, id, receipt]);
       await client.query("COMMIT");
@@ -399,6 +399,11 @@ export class RunOrchestration {
     const result = await this.pool.query<{ id: string; trial_id: string; state: string; generation: number; lease_expires_at?: Date; infrastructure_failures: number }>("SELECT id, trial_id, state, generation, lease_expires_at, infrastructure_failures FROM benchi_phase_jobs WHERE trial_id = $1", [trialId]);
     const job = result.rows[0];
     return job && { jobId: job.id, trialId: job.trial_id, state: job.state, generation: job.generation, expiresAt: job.lease_expires_at?.toISOString(), infrastructureFailures: job.infrastructure_failures };
+  }
+
+  async submissionSlotForTrial(trialId: string): Promise<string | undefined> {
+    const result = await this.pool.query<{ trial: Trial }>("SELECT trial FROM benchi_eval_trials WHERE id = $1", [trialId]);
+    return result.rows[0]?.trial.submissionSlotId;
   }
 
   async recordEvent(event: Omit<RunEvent, "sequence">): Promise<RunEvent> {

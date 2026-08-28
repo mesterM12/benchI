@@ -124,6 +124,25 @@ protocol("Freeze Eval Run Protocol Transaction", () => {
     expect(after?.sources).toEqual(before?.sources);
     expect(after?.trials).toEqual(before?.trials);
   });
+
+  it("does not schedule Submission Slot Eval Trials for an agent", async () => {
+    const runs = new RunOrchestration(pool, new InMemoryRetainedContent());
+    await runs.freeze({
+      id: "run-submissions", suiteRevisionId: "suite-revision-7", suiteRoot: root,
+      suite: {}, resolvedDefinitions: {}, effectivePolicies: {},
+      trials: [
+        { id: "opencode__task__baseline__1", agentId: "opencode", taskId: "task", scenarioVariantId: "baseline", repetitionIndex: 1 },
+        { id: "external__task__baseline__1", submissionSlotId: "external", taskId: "task", scenarioVariantId: "baseline", repetitionIndex: 1 }
+      ],
+      localSources: [], frozenAt: "2026-08-27T12:00:00.000Z", benchiVersion: "0.0.0"
+    });
+
+    await runs.start("run-submissions");
+
+    expect(await runs.getJobForTrial("external__task__baseline__1")).toBeUndefined();
+    expect(await runs.leaseNext("worker", "2026-08-27T12:00:00.000Z", "2026-08-27T12:01:00.000Z"))
+      .toMatchObject({ trialId: "opencode__task__baseline__1" });
+  });
 });
 
 protocol("Eval Trial worker protocol", () => {

@@ -64,7 +64,7 @@ Set an authenticated OpenCode model supported by the installed OpenCode provider
 
 ```sh
 OPENCODE_CHARACTERIZATION_MODEL='provider/model' docker compose --profile acceptance build --no-cache release-acceptance
-OPENCODE_CHARACTERIZATION_MODEL='provider/model' docker compose --profile acceptance run --rm release-acceptance
+OPENCODE_CHARACTERIZATION_MODEL='provider/model' docker compose --profile acceptance run --rm -v "$HOME/.local/share/opencode/auth.json:/tmp/.local/share/opencode/auth.json:ro" release-acceptance
 ```
 
 Verified claims: retained Git inputs, attempt evidence, PostgreSQL-backed leases, S3-compatible retained content, recovery safety gates, and signed upgrade rollback boundaries. benchI does not claim host isolation beyond configured Sandcastle behavior, identical outcome reproduction for nondeterministic providers, or reconstruction after deleted/tombstoned required artifacts.

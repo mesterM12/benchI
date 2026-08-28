@@ -293,6 +293,7 @@ function evidence(input: OpenCodeTrialInput, started: Date, finished: Date, even
   };
 }
 
+<<<<<<< HEAD
 async function revision(repositoryPath: string): Promise<string | null> {
   try {
     return (await promisify(execFile)("git", ["-C", repositoryPath, "rev-parse", "HEAD"])).stdout.trim();
@@ -304,6 +305,12 @@ async function revision(repositoryPath: string): Promise<string | null> {
 async function captureWorkspaceDiff(repositoryPath: string, baseline: string | null): Promise<string | null> {
   try {
     return (await promisify(execFile)("git", ["-C", repositoryPath, "diff", "--binary", baseline ?? "HEAD"], { maxBuffer: 1024 * 1024 * 1024 })).stdout;
+||||||| parent of b783e12 (feat: retain workspace diffs)
+=======
+async function captureWorkspaceDiff(repositoryPath: string): Promise<string | null> {
+  try {
+    return (await promisify(execFile)("git", ["-C", repositoryPath, "diff", "--binary"], { maxBuffer: 1024 * 1024 * 1024 })).stdout;
+>>>>>>> b783e12 (feat: retain workspace diffs)
   } catch {
     return null;
   }

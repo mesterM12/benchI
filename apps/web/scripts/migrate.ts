@@ -21,8 +21,9 @@ await pool.query(`
     "userId" text NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
     "accessToken" text, "refreshToken" text, "idToken" text,
     "accessTokenExpiresAt" timestamptz, "refreshTokenExpiresAt" timestamptz,
-    scope text, password text, "createdAt" timestamptz NOT NULL DEFAULT now(), "updatedAt" timestamptz NOT NULL DEFAULT now()
+    scope text, password text, issuer text, "createdAt" timestamptz NOT NULL DEFAULT now(), "updatedAt" timestamptz NOT NULL DEFAULT now()
   );
+  ALTER TABLE account ADD COLUMN IF NOT EXISTS issuer text;
   CREATE INDEX IF NOT EXISTS account_user_id_idx ON account ("userId");
   CREATE TABLE IF NOT EXISTS verification (
     id text PRIMARY KEY, identifier text NOT NULL, value text NOT NULL, "expiresAt" timestamptz NOT NULL,

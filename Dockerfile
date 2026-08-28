@@ -1,6 +1,7 @@
 FROM node:24.7.0-bookworm-slim AS build
 WORKDIR /app
 RUN corepack enable
+RUN npm install --global opencode-ai@1.18.23
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
 COPY apps ./apps
 COPY packages ./packages

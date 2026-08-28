@@ -206,6 +206,10 @@ export class SecretCustody {
   }
 }
 
+export async function deliverEnvironment(custody: SecretCustody, deliveries: Array<{ name: string; request: SecretDeliveryRequest }>): Promise<Record<string, string>> {
+  return Object.fromEntries(await Promise.all(deliveries.map(async ({ name, request }) => [name, (await custody.deliver(request)).toString("utf8")] as const)));
+}
+
 async function defaultAudit(client: PoolClient, event: { action: string; secretVersionId: string; actor: string; detail: Record<string, unknown> }): Promise<void> {
   await client.query("INSERT INTO benchi_secret_audit_events (action, secret_version_id, actor, detail) VALUES ($1, $2, $3, $4)", [event.action, event.secretVersionId, event.actor, event.detail]);
 }

@@ -196,6 +196,28 @@ describe("OpenCode trial execution", () => {
     expect(result.acceptance).toEqual({ command: "npm test", exitCode: 0, stdout: "ok\n", stderr: "" });
   });
 
+  it("delivers secret environment values only to Sandcastle and redacts returned evidence", async () => {
+    let received: WorktreeRunOptions | undefined;
+    vi.mocked(createWorktree).mockResolvedValue({
+      branch: "benchi/secret", worktreePath: "/repo/worktree",
+      run: async (options: WorktreeRunOptions) => {
+        received = options;
+        if (options.logging?.type === "file") options.logging.onAgentStreamEvent?.({ type: "text", message: "token=super-secret-token", iteration: 1, timestamp: new Date() });
+        return { iterations: [{}], stdout: "super-secret-token", commits: [] };
+      },
+      close: async () => ({})
+    } as unknown as Worktree);
+
+    const result = await runOpenCodeTrial({
+      attemptId: "secret", repositoryPath: "/repo", prompt: "fix", model: "model", sandbox: {} as SandboxProvider,
+      secretEnvironment: { MODEL_TOKEN: "super-secret-token" }
+    });
+
+    expect(received?.agent).toMatchObject({ name: "opencode" });
+    expect(result.output.stdout.text).toBe("[REDACTED]");
+    expect(result.events).toEqual([expect.objectContaining({ message: "token=[REDACTED]" })]);
+  });
+
   it.each(["failed", "cancelled"] as const)("returns %s evidence and preserves its worktree", async (status) => {
     const reason = new Error(status);
     const close = vi.fn()

@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   InMemoryMasterKeys,
   SecretCustody,
+  deliverEnvironment,
   migrate,
   type DeliveryAuthorization,
   type SecretDeliveryRequest
@@ -57,6 +58,13 @@ protocol("Secret Custody application contract", () => {
 
     await expect(custody.deliver(request)).resolves.toEqual(Buffer.from("super-secret-token"));
     await expect(custody.deliver(request)).rejects.toThrow("SECRET_DELIVERY_REPLAY");
+  });
+
+  it("delivers a granted pinned version as a Sandcastle environment value", async () => {
+    const custody = await setup();
+
+    await expect(deliverEnvironment(custody, [{ name: "MODEL_TOKEN", request }])).resolves.toEqual({ MODEL_TOKEN: "super-secret-token" });
+    await expect(deliverEnvironment(custody, [{ name: "MODEL_TOKEN", request: { ...request, deliveryId: "replay" } }])).rejects.toThrow("SECRET_DELIVERY_REPLAY");
   });
 
   it("fails closed for mismatched scope, lease loss, revocation, and audit failure", async () => {

@@ -87,6 +87,7 @@ export type OpenCodeTrialInput = {
   variant?: string;
   agent?: string;
   env?: Record<string, string>;
+  secretEnvironment?: Record<string, string>;
   signal?: AbortSignal;
   acceptanceCommand?: string;
   now?: () => Date;
@@ -97,7 +98,7 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
   const now = input.now ?? (() => new Date());
   const started = now();
   const events: OpenCodeTrialEvent[] = [];
-  const options: OpenCodeOptions = { variant: input.variant, agent: input.agent, env: input.env };
+  const options: OpenCodeOptions = { variant: input.variant, agent: input.agent, env: { ...input.env, ...input.secretEnvironment } };
   const branch = `benchi/${input.attemptId}`;
   let worktree: Worktree;
   try {
@@ -156,7 +157,7 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
     }
     const workspaceDiff = await captureWorkspaceDiff(worktree.worktreePath, baseline);
     const close = await worktree.close();
-    return evidence(input, started, now(), events, worktree, {
+    return redactTrialResult(evidence(input, started, now(), events, worktree, {
       status: "completed",
       error: null,
       completionSignal: result.completionSignal ?? null,
@@ -167,7 +168,7 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
       logFilePath: result.logFilePath ?? null,
       preservedWorktreePath: close.preservedWorktreePath ?? null,
       workspaceDiff
-    });
+    }), input.secretEnvironment);
   } catch (error) {
     const workspaceDiff = await captureWorkspaceDiff(worktree.worktreePath, baseline);
     let preservedWorktreePath: string | null;
@@ -176,7 +177,7 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
     } catch {
       preservedWorktreePath = worktree.worktreePath;
     }
-    return evidence(input, started, now(), events, worktree, {
+    return redactTrialResult(evidence(input, started, now(), events, worktree, {
       status: input.signal?.aborted ? "cancelled" : "failed",
       error: errorDetails(error),
       completionSignal: null,
@@ -187,7 +188,7 @@ export async function runOpenCodeTrial(input: OpenCodeTrialInput): Promise<OpenC
       logFilePath: null,
       preservedWorktreePath,
       workspaceDiff
-    });
+    }), input.secretEnvironment);
   }
 }
 
@@ -199,7 +200,7 @@ export type FrozenOpenCodeExecution = {
   evidence: ExecutionEvidence[];
 };
 
-export async function executeFrozenOpenCodeTrial(input: { attemptId: string; remote: string; commit: string; sourceArchive: Buffer; prompt: string; acceptanceCommand: string; model: string }): Promise<FrozenOpenCodeExecution> {
+export async function executeFrozenOpenCodeTrial(input: { attemptId: string; remote: string; commit: string; sourceArchive: Buffer; prompt: string; acceptanceCommand: string; model: string; secretEnvironment?: Record<string, string> }): Promise<FrozenOpenCodeExecution> {
   const repositoryPath = await mkdtemp(join(tmpdir(), "benchi-trial-"));
   try {
     const archivePath = join(repositoryPath, "source.tar");
@@ -217,7 +218,8 @@ export async function executeFrozenOpenCodeTrial(input: { attemptId: string; rem
       prompt: `${input.prompt}\nRun ${input.acceptanceCommand}, fix failures, rerun it, and commit the completed work.`,
       model: input.model,
       sandbox: noSandbox(),
-      acceptanceCommand: input.acceptanceCommand
+      acceptanceCommand: input.acceptanceCommand,
+      secretEnvironment: input.secretEnvironment
     });
     const evidence: ExecutionEvidence[] = [{ path: "sandcastle-result.json", bytes: Buffer.from(JSON.stringify(result)) }];
     if (result.workspaceDiff !== null) evidence.push({ path: "workspace.patch", bytes: Buffer.from(result.workspaceDiff) });
@@ -243,7 +245,7 @@ export async function executeFrozenOpenCodeTrial(input: { attemptId: string; rem
       classification: result.status === "completed" ? "EvaluationOutcome" : "InfrastructureFailure",
       result: { outcome: passed ? "passed" : "failed", execution: result, diagnostics },
       runtimeEnvironment: { schemaVersion: "1", adapter: result.runtime.adapter, observedAt: result.runtime.finishedAt },
-      evidence
+      evidence: redactEvidence(evidence, input.secretEnvironment)
     };
   } finally {
     await rm(repositoryPath, { recursive: true, force: true });
@@ -325,6 +327,32 @@ function normalizeAgentEvent(event: AgentStreamEvent): OpenCodeTrialEvent {
   if (event.type === "text") return { type: event.type, message: event.message, ...common };
   if (event.type === "toolCall") return { type: event.type, name: event.name, formattedArgs: event.formattedArgs, ...common };
   return { type: event.type, line: event.line, ...common };
+}
+
+function redactTrialResult(result: OpenCodeTrialResult, environment: Record<string, string> | undefined): OpenCodeTrialResult {
+  const secrets = Object.values(environment ?? {}).filter(Boolean);
+  if (secrets.length === 0) return result;
+  const redact = (value: string | null) => value === null ? null : secrets.reduce((text, secret) => text.replaceAll(secret, "[REDACTED]"), value);
+  return {
+    ...result,
+    events: result.events.map((event) => event.type === "text" ? { ...event, message: redact(event.message)! } : event.type === "toolCall" ? { ...event, formattedArgs: redact(event.formattedArgs)! } : { ...event, line: redact(event.line)! }),
+    output: { ...result.output, stdout: { ...result.output.stdout, text: redact(result.output.stdout.text) } },
+    acceptance: result.acceptance && { ...result.acceptance, stdout: redact(result.acceptance.stdout)!, stderr: redact(result.acceptance.stderr)! },
+    workspaceDiff: redact(result.workspaceDiff)
+  };
+}
+
+function redactEvidence(evidence: ExecutionEvidence[], environment: Record<string, string> | undefined): ExecutionEvidence[] {
+  const secrets = Object.values(environment ?? {}).filter(Boolean).map((value) => Buffer.from(value));
+  if (secrets.length === 0) return evidence;
+  return evidence.flatMap(({ path, bytes }) => {
+    if (!secrets.some((secret) => bytes.includes(secret))) return [{ path, bytes }];
+    // Binary repository evidence cannot be safely rewritten; do not retain a disclosure.
+    if (path.endsWith(".tar")) return [];
+    let redacted = bytes;
+    for (const secret of secrets) redacted = Buffer.from(redacted.toString().replaceAll(secret.toString(), "[REDACTED]"));
+    return [{ path, bytes: redacted }];
+  });
 }
 
 export class WorkerRuntime {

@@ -1,0 +1,22 @@
+kind: EvalSuite
+schemaVersion: "1"
+id: made-up-opencode
+sources:
+  - id: benchi
+    git:
+      remote: https://github.com/mesterM12/benchI.git
+      ref: main
+agents:
+  - id: opencode
+    adapter: opencode
+    model: opencode/big-pickle
+tasks:
+  - id: smoke
+    source: benchi
+    prompt: Inspect the repository and report completion without changing it.
+    acceptance:
+      command: "true"
+execution:
+  timeoutSeconds: 600
+matrix:
+  repetitions: 1

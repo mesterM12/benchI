@@ -9,6 +9,7 @@ x-application: &application
   tmpfs:
     - /tmp
   environment: &application-environment
+    HOME: /tmp
     DATABASE_URL: postgres://benchi:${POSTGRES_PASSWORD:-benchi-local}@postgres:5432/benchi
     OBJECT_STORAGE_ENDPOINT: http://object-storage:9000
     OBJECT_STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:-benchi}

@@ -479,7 +479,7 @@ export class RunOrchestration {
       const id = `${attemptId}:${path}`;
       await this.artifacts.retain({ id, bytes, visibility: "Organization-visible", createdBy: "system", capabilities: allCapabilities });
       const artifact = await this.artifacts.inspect(id, systemPrincipal);
-      return { id, path, contentIdentity: artifact.contentIdentity, size: artifact.byteLength };
+      return { id, path, contentIdentity: identity(bytes), size: artifact.byteLength };
     }));
     return { schemaVersion: "1", artifacts };
   }

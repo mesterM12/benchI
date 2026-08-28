@@ -22,6 +22,17 @@ export interface MasterKeys {
   unwrap(version: string, wrappedDataKey: Buffer): Promise<Buffer>;
 }
 
+export function redactRetainedContent(bytes: Buffer, secretValues: readonly Buffer[]): { bytes: Buffer; disclosed: boolean } {
+  let redacted = bytes;
+  let disclosed = false;
+  for (const secret of secretValues) {
+    if (secret.length === 0 || !redacted.includes(secret)) continue;
+    disclosed = true;
+    redacted = replaceAll(redacted, secret, Buffer.from("[REDACTED]"));
+  }
+  return { bytes: redacted, disclosed };
+}
+
 export class InMemoryMasterKeys implements MasterKeys {
   constructor(private readonly keys: Record<string, Buffer>) {}
 
@@ -214,4 +225,16 @@ function decrypt(key: Buffer, envelope: Buffer): Buffer {
 
 function isUniqueViolation(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
+}
+
+function replaceAll(bytes: Buffer, search: Buffer, replacement: Buffer): Buffer {
+  const parts: Buffer[] = [];
+  let start = 0;
+  let index = bytes.indexOf(search, start);
+  while (index !== -1) {
+    parts.push(bytes.subarray(start, index), replacement);
+    start = index + search.length;
+    index = bytes.indexOf(search, start);
+  }
+  return Buffer.concat([...parts, bytes.subarray(start)]);
 }
